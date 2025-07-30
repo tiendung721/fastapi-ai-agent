@@ -1,0 +1,13 @@
+# Ignore Python + FastAPI cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+uploads/
+output/
+memory_store/
+user_history.json
+extractor_memory.json
+*.xlsx
+.env 
