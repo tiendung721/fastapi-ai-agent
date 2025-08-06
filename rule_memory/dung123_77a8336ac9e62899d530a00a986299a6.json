@@ -1,0 +1,25 @@
+{
+  "start_keywords": [
+    "CÔNG TY TNHH MTV KHOÁNG SẢN VÔI VIỆT"
+  ],
+  "end_keywords": [
+    "Tổng hợp các dự án làm trong tháng 2",
+    ""
+  ],
+  "header_includes": [
+    "Unnamed: 1",
+    "Unnamed: 2",
+    "Unnamed: 3"
+  ],
+  "label_keywords": {
+    "chứa 'Sự cố'": "Bảng sự cố",
+    "chứa 'Vệ sinh'": "Bảng vệ sinh",
+    "chứa 'Bảo dưỡng'": "Bảng bảo dưỡng",
+    "chứa 'Thi công'": "Bảng thi công",
+    "chứa 'Làm lại'": "Bảng làm lại",
+    "chứa 'Sửa chữa'": "Bảng sửa chữa",
+    "chứa 'Cải tạo'": "Bảng cải tạo",
+    "chứa 'Thiết kế'": "Bảng thiết kế",
+    "chứa 'Chạy thử'": "Bảng chạy thử"
+  }
+}

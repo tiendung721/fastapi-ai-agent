@@ -1,47 +1,49 @@
-# extractor_controller.py
 from fastapi import APIRouter, UploadFile, File, Form
-import pandas as pd
 import os, shutil, uuid
-
-from data_processing.extractor import extract_rule_with_gpt
-from data_processing.rule_based_extractor import (
-    get_header_fingerprint, find_rule, save_rule, extract_sections_by_rule
-)
+import pandas as pd
+from data_processing.section_detector import detect_sections_auto
+from data_processing.rule_memory import get_rule_for_fingerprint, get_fingerprint
+from data_processing.rule_based_extractor import extract_sections_with_rule
 
 router = APIRouter()
-UPLOAD_DIR = "uploads"
+
+UPLOAD_DIR = "uploaded_files"
 CACHE = {}
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 @router.post("/extractor-preview")
 async def extractor_preview(
     file: UploadFile = File(...),
-    user_id: str = Form(...),
-    feedback: str = Form("")  # Góp ý người dùng (optional)
+    user_id: str = Form(...)
 ):
-    file_id = str(uuid.uuid4())
-    file_path = os.path.join(UPLOAD_DIR, f"{file_id}_{file.filename}")
+    session_id = str(uuid.uuid4())
+    file_ext = os.path.splitext(file.filename)[1]
+    file_path = os.path.join(UPLOAD_DIR, f"{session_id}{file_ext}")
     with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    df = pd.read_excel(file_path).dropna(how="all")
-    headers = df.columns.tolist()
-    fingerprint = get_header_fingerprint(headers)
+    df = pd.read_excel(file_path)
+    fingerprint = get_fingerprint(df)
+    rule = get_rule_for_fingerprint(fingerprint)
 
-    rule = find_rule(headers)
-    if not rule:
-        # GPT học rule từ file + góp ý
-        rule = extract_rule_with_gpt(file_path, feedback)
-        save_rule(headers, rule)
+    if rule:
+        sections = extract_sections_with_rule(df, rule)
+        used_rule = True
+    else:
+        sections = detect_sections_auto(df)
+        used_rule = False
 
-    sections = extract_sections_by_rule(df, rule)
-
-    CACHE[file_id] = {
-        "user_id": user_id,
+    CACHE[session_id] = {
         "file_path": file_path,
-        "headers": headers,
-        "fingerprint": fingerprint,
         "sections": sections,
-        "source": "rule"
+        "user_confirmed": False,
+        "user_id": user_id
     }
-    return {"session_id": file_id, "sections": sections, "source": "rule"}
+
+    return {
+        "message": "📄 Đã xử lý file thành công.",
+        "session_id": session_id,
+        "user_id": user_id,
+        "used_rule": used_rule,
+        "sections": sections
+    }
