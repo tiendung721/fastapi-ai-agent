@@ -1,7 +1,11 @@
-from fastapi import APIRouter, HTTPException
-from typing import List, Dict, Optional
+# controllers/section_confirm_controller.py
+
+from fastapi import APIRouter, HTTPException, Body
+from pydantic import BaseModel
+from typing import List, Dict, Optional, Any
 import pandas as pd
 import time
+import json
 
 from common.session_store import SessionStore
 from common.models import Section
@@ -20,14 +24,39 @@ router = APIRouter()
 store = SessionStore()
 
 
+# =======================
+# Pydantic payload models
+# =======================
+class SectionIn(BaseModel):
+    header_row: int
+    start_row: int
+    end_row: int
+    label: Optional[str] = None
+
+
+class ConfirmRequest(BaseModel):
+    session_id: str
+    user_id: Optional[str] = "default_user"
+    sheet_name: Optional[str] = None
+    sections: Optional[List[SectionIn]] = None
+
+
+# =======================
+# Helpers
+# =======================
 def _read_df(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
+    """
+    Đọc file mà KHÔNG coi dòng nào là header để:
+    - df.index = 0 <-> Excel row 1
+    - Tránh lệch +2 khi quy đổi giữa FE (1-based) và BE (0-based)
+    """
     ext = (file_path or "").lower().split(".")[-1]
     if ext == "csv":
-        return pd.read_csv(file_path)
+        return pd.read_csv(file_path, header=None)
     try:
-        return pd.read_excel(file_path, sheet_name=sheet_name)
+        return pd.read_excel(file_path, sheet_name=sheet_name, header=None)
     except TypeError:
-        return pd.read_excel(file_path)
+        return pd.read_excel(file_path, header=None)
 
 
 def _pick_sections_from_input_or_session(
@@ -42,13 +71,35 @@ def _pick_sections_from_input_or_session(
     raise HTTPException(status_code=400, detail="Thiếu 'sections' và session cũng không có auto_sections.")
 
 
+# =======================
+# Endpoint
+# =======================
 @router.post("/confirm_sections")
 def confirm_sections(
-    session_id: str,
-    sections: Optional[List[Dict]] = None,
-    sheet_name: Optional[str] = None,
-    user_id: Optional[str] = "default_user",
+    payload: ConfirmRequest = Body(
+        ...,
+        example={
+            "session_id": "12355837-919e-4913-920d-0d9ca07e3acd",
+            "user_id": "dung123",
+            "sheet_name": "Sheet1",
+            "sections": [
+                {"header_row": 5, "start_row": 6, "end_row": 32, "label": "Bang chinh"},
+                {"header_row": 5, "start_row": 34, "end_row": 49, "label": "Du an thang 2"},
+            ],
+        },
+    )
 ):
+    # 0) Resolve từ payload
+    session_id: str = payload.session_id
+    user_id: str = payload.user_id or "default_user"
+    sheet_name: Optional[str] = payload.sheet_name
+    sections_in: Optional[List[Dict]] = (
+        [s.model_dump() for s in payload.sections] if payload.sections else None
+    )
+
+    if not session_id:
+        raise HTTPException(status_code=422, detail="session_id là bắt buộc")
+
     # 1) Lấy session
     data = store.get(session_id)
     if not data:
@@ -69,21 +120,15 @@ def confirm_sections(
         if df.shape[0] == 0:
             raise HTTPException(status_code=400, detail="File/sheet rỗng")
 
-        # 3) Lấy sections (raw) từ payload hoặc từ session.auto_sections
-        try:
-            sections_raw = _pick_sections_from_input_or_session(sections, data)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Không thể xác định sections: {e}")
+        # 3) Lấy sections từ payload hoặc session.auto_sections
+        sections_raw: Optional[List[Dict]] = _pick_sections_from_input_or_session(sections_in, data)
 
-        # 4) ✅ CHỈ VALIDATE 0‑BASED, KHÔNG CONVERT (tránh “trừ 1” nhầm)
-        #    Nếu validate fail, mới thử fallback convert 1->0 một lần.
+        # 4) ✅ VALIDATE 0-BASED, KHÔNG tự trừ 1 trừ khi cần fallback
         try:
             sections_zb = validate_sections_zero_based(sections_raw, nrows=df.shape[0])
             index_base = "zero"
         except IndexErrorDetail as ie_primary:
-            # Fallback an toàn: chỉ thử nếu người dùng lỡ gửi 1‑based.
+            # Fallback an toàn: thử convert one->zero một lần
             try:
                 sections_try = to_zero_based(sections_raw, nrows=df.shape[0])
                 sections_zb = validate_sections_zero_based(sections_try, nrows=df.shape[0])
@@ -91,7 +136,7 @@ def confirm_sections(
             except Exception:
                 return {"ok": False, "code": ie_primary.code, "error": str(ie_primary)}
 
-        # 5) Lưu confirmed_sections vào session (GIỮ NGUYÊN 0‑BASED)
+        # 5) Lưu confirmed_sections vào session (GIỮ NGUYÊN 0-BASED)
         data.confirmed_sections = [Section(**s) for s in sections_zb]
         if not getattr(data, "user_id", None):
             try:
@@ -100,7 +145,7 @@ def confirm_sections(
                 pass
         store.upsert(data)
 
-        # 6) Học rule (structured → fallback overrides)
+        # 6) Học rule (structured_gpt → fallback overrides)
         auto_learned = False
         rule_version: Optional[str] = None
         learn_method: Optional[str] = None
@@ -119,10 +164,10 @@ def confirm_sections(
                 learned_rule = learn_rule_from_sections(
                     file_path=data.file_path,
                     sections=sections_zb,
-                    sheet_name=sheet_name
+                    sheet_name=sheet_name,
                 )
                 trial = extract_sections_with_rule(df, learned_rule) or []
-                # Dù rule có trả gì, ép về & validate 0‑based trước khi chấp nhận
+                # Ép về & validate 0-based trước khi chấp nhận
                 trial = to_zero_based(trial, nrows=df.shape[0])
                 trial = validate_sections_zero_based(trial, nrows=df.shape[0])
 
@@ -130,24 +175,29 @@ def confirm_sections(
                     try:
                         save_rule_for_fingerprint(fp_used, learned_rule, user_id=user_id)
                     except TypeError:
+                        # một số version không có user_id
                         save_rule_for_fingerprint(fp_used, learned_rule)
                     auto_learned = True
                     learn_method = "structured_gpt"
+                    try:
+                        rule_version = str(learned_rule.get("version"))
+                    except Exception:
+                        rule_version = None
             except Exception:
                 pass
 
-            # 6.3) NHÁNH 2: Fallback overrides (GIỮ 0‑BASED, KHÔNG trừ 1)
+            # 6.3) NHÁNH 2: Fallback overrides (GIỮ 0-BASED, KHÔNG trừ 1)
             if not auto_learned:
                 overrides = {"sections": []}
                 headers = {int(s["header_row"]) for s in sections_zb}
                 if len(headers) == 1:
-                    overrides["header_row"] = int(list(headers)[0])  # 0‑based
+                    overrides["header_row"] = int(list(headers)[0])  # 0-based
 
                 for idx, s in enumerate(sections_zb, start=1):
                     fields = {
-                        "start_row": int(s["start_row"]),   # 0‑based
-                        "end_row": int(s["end_row"]),       # 0‑based (inclusive)
-                        "header_row": int(s["header_row"]), # 0‑based
+                        "start_row": int(s["start_row"]),   # 0-based
+                        "end_row": int(s["end_row"]),       # 0-based (inclusive)
+                        "header_row": int(s["header_row"]), # 0-based
                     }
                     if s.get("label"):
                         fields["label"] = s["label"]
@@ -159,7 +209,7 @@ def confirm_sections(
                 rule_overrides = {
                     "version": int(time.time()),
                     "updated_at": int(time.time()),
-                    "overrides": overrides
+                    "overrides": overrides,
                 }
 
                 try:
@@ -171,9 +221,14 @@ def confirm_sections(
                 learn_method = "overrides_fallback"
                 rule_version = str(rule_overrides["version"])
 
-            # 6.4) Promote
+            # 6.4) Promote từ chat (tuỳ chữ ký hàm của bạn)
             try:
-                promoted = promote_best_candidates(user_id, fp_used)
+                try:
+                    # chữ ký mới (khuyên dùng)
+                    promoted = promote_best_candidates(user_id=user_id, fingerprint=fp_used, threshold=0.75)
+                except TypeError:
+                    # chữ ký cũ
+                    promoted = promote_best_candidates(user_id, fp_used)
             except Exception:
                 promoted = False
 
@@ -192,23 +247,23 @@ def confirm_sections(
                 "rule_version": rule_version,
                 "learn_method": learn_method,
                 "index_base": index_base,
-                "timestamp": int(time.time())
+                "timestamp": int(time.time()),
             })
         except Exception:
             pass
 
         return {
             "ok": True,
-            "code": "CONFIRMED",
+            "code": "CONFIRM_OK",
             "data": {
                 "count": len(sections_zb),
-                "sections": sections_zb,       # ← GIỮ NGUYÊN 0‑BASED BẠN GỬI
+                "sections": sections_zb,       # GIỮ 0-BASED
                 "fingerprint": fp_used,
-                "learn_method": learn_method
+                "learn_method": learn_method,
             },
             "auto_learned_rule": auto_learned,
             "rule_version": rule_version,
-            "promoted": promoted
+            "promoted": promoted,
         }
 
     finally:

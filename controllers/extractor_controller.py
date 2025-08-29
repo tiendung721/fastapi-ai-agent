@@ -25,8 +25,6 @@ os.makedirs(RULE_DIR, exist_ok=True)
 store = SessionStore()
 
 
-# ============================ Helpers ============================
-
 def _read_df(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
 
     """
@@ -57,7 +55,8 @@ def _read_df(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
         return pd.read_excel(file_path, sheet_name=0)
 
     # Có chỉ định sheet_name -> đọc đúng sheet này
-    return pd.read_excel(file_path, sheet_name=sheet_name)
+    return pd.read_excel(file_path, sheet_name=sheet_name, header=None)
+
 
 
 def _idx_from_sid(value: str) -> Optional[int]:
@@ -175,7 +174,6 @@ def _list_rule_files_for_user(user_id: str) -> List[str]:
     return [os.path.basename(p) for p in glob.glob(pattern)]
 
 
-# ============================ Endpoints ============================
 
 @router.post("/upload")
 async def upload_file(
@@ -316,131 +314,4 @@ async def preview(
         },
     }
 
-@router.post("/confirm_sections")
-async def confirm_sections(
-    # hỗ trợ cả query lẫn form cho session_id/id
-    session_id_f: Optional[str] = Form(None),
-    id_f: Optional[str] = Form(None),
-    user_id_f: Optional[str] = Form(None),
-    sheet_name_f: Optional[str] = Form(None),
-
-    session_id_q: Optional[str] = Query(None),
-    id_q: Optional[str] = Query(None),
-    user_id_q: Optional[str] = Query(None),
-    sheet_name_q: Optional[str] = Query(None),
-
-    # body có thể là {"sections":[...]} hoặc raw list [...]
-    body: Any = Body(default=None),
-    # hoặc form-data: sections="<json string>"
-    sections_form: Optional[str] = Form(None),
-):
-    """
-    Xác nhận sections (0-based) cho session và HỌC RULE cho (user_id, sheet_name).
-    Chấp nhận 3 kiểu input:
-      1) JSON body: {"sections": [...]}
-      2) JSON body raw: [...]
-      3) Form-data: sections="<json string>"
-    Đồng thời hỗ trợ session_id qua cả form/query và alias 'id'.
-    """
-
-    # 0) Resolve session_id / user_id / sheet_name
-    session_id = session_id_f or session_id_q or id_f or id_q
-    user_id = user_id_f or user_id_q
-    sheet_name = sheet_name_f or sheet_name_q
-
-    if not session_id:
-        raise HTTPException(status_code=422, detail="session_id (hoặc id) là bắt buộc")
-
-    data = store.get(session_id)
-    if not data:
-        raise HTTPException(status_code=404, detail="Session không tồn tại")
-
-    # đồng bộ user_id/session
-    if not user_id:
-        user_id = getattr(data, "user_id", None) or "default_user"
-    else:
-        try:
-            data.user_id = user_id
-            store.upsert(data)
-        except Exception:
-            pass
-
-    # 1) Lấy sections từ body/form
-    payload_sections = None
-    # body dạng dict: {"sections": [...]}
-    if isinstance(body, dict) and "sections" in body:
-        payload_sections = body.get("sections")
-    # body là list [...]
-    elif isinstance(body, list):
-        payload_sections = body
-    # form 'sections' = "<json string>"
-    elif sections_form:
-        try:
-            parsed = json.loads(sections_form)
-            if isinstance(parsed, dict) and "sections" in parsed:
-                payload_sections = parsed["sections"]
-            elif isinstance(parsed, list):
-                payload_sections = parsed
-        except Exception as e:
-            raise HTTPException(status_code=422, detail=f"sections (form) không phải JSON hợp lệ: {e}")
-
-    if not isinstance(payload_sections, list) or not payload_sections:
-        raise HTTPException(status_code=422, detail="Thiếu hoặc sai định dạng 'sections'")
-
-    # 2) Đọc file để biết nrows (phục vụ validate)
-    df = _read_df(data.file_path, sheet_name=sheet_name)
-    if df.shape[0] == 0:
-        raise HTTPException(status_code=400, detail="File/sheet rỗng")
-
-    # 3) Chuẩn hoá & validate 0-based
-    try:
-        sections0 = to_zero_based(payload_sections, nrows=df.shape[0])
-        sections0 = validate_sections_zero_based(sections0, nrows=df.shape[0])
-    except IndexErrorDetail as ie:
-        return {"ok": False, "code": ie.code, "error": str(ie)}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Sections không hợp lệ: {e}")
-
-    # 4) Lưu vào SessionStore
-    try:
-        data.confirmed_sections = [Section(**s) for s in sections0]
-        data.auto_sections = data.auto_sections or [Section(**s) for s in sections0]  # fallback
-        data.used_rule = False  # vì đây là xác nhận thủ công
-        store.upsert(data)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi lưu session: {e}")
-
-    # 5) HỌC RULE (structured) cho (user_id, sheet_name)
-    #    Lần sau /preview sẽ override autodetect bằng list này.
-    rule_obj = {"type": "structured", "sections": sections0}
-
-    # dùng helpers của rules_controller nếu có; nếu không, fallback tự ghi file
-    try:
-        rules = _load_rules()
-        rules[_key(user_id or "default_user", sheet_name)] = rule_obj
-        try:
-            _save_rules(rules)  # nếu có trong rules_controller
-        except Exception:
-            # fallback: tự lưu ra output/rules.json
-            OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output")
-            os.makedirs(OUTPUT_DIR, exist_ok=True)
-            RULES_PATH = os.path.join(OUTPUT_DIR, "rules.json")
-            with open(RULES_PATH, "w", encoding="utf-8") as f:
-                json.dump(rules, f, ensure_ascii=False, indent=2)
-        learned = True
-    except Exception:
-        learned = False  # không làm hỏng confirm nếu phần học rule lỗi
-
-    return {
-        "ok": True,
-        "code": "CONFIRM_OK",
-        "data": {
-            "session_id": session_id,
-            "user_id": user_id,
-            "sheet_name": sheet_name,
-            "n_sections": len(sections0),
-            "learned_rule": learned,
-            "rule_type": "structured",
-        },
-    }
 

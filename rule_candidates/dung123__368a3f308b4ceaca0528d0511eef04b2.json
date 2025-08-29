@@ -1,0 +1,24 @@
+[
+  {
+    "key": "{\"intent\": \"edit_sections\", \"operations\": [{\"fields\": {\"end_row\": 32}, \"op\": \"update\", \"selector\": {\"by\": \"index\", \"value\": \"S1\"}}]}",
+    "patch_spec": {
+      "intent": "edit_sections",
+      "operations": [
+        {
+          "op": "update",
+          "selector": {
+            "by": "index",
+            "value": "S1"
+          },
+          "fields": {
+            "end_row": 32
+          }
+        }
+      ]
+    },
+    "support_count": 1,
+    "confidence": 0.75,
+    "created_at": 1756509267,
+    "last_seen": 1756509267
+  }
+]

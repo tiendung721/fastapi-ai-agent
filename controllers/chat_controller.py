@@ -23,7 +23,8 @@ def _read_df(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
     if ext == "csv":
         return pd.read_csv(file_path)
     try:
-        return pd.read_excel(file_path, sheet_name=sheet_name)
+        return pd.read_excel(file_path, sheet_name=sheet_name, header=None)
+
     except TypeError:
         return pd.read_excel(file_path)
 
