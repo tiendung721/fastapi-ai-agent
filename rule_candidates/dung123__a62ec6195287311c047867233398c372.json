@@ -1,0 +1,43 @@
+[
+  {
+    "key": "{\"intent\": \"edit_sections\", \"operations\": [{\"fields\": {\"end_row\": 32, \"start_row\": 6}, \"op\": \"update\", \"selector\": {\"by\": \"index\", \"value\": \"S1\"}}]}",
+    "patch_spec": {
+      "intent": "edit_sections",
+      "operations": [
+        {
+          "op": "update",
+          "selector": {
+            "by": "index",
+            "value": "S1"
+          },
+          "fields": {
+            "start_row": 6,
+            "end_row": 32
+          }
+        }
+      ]
+    },
+    "support_count": 5,
+    "confidence": 0.75,
+    "created_at": 1755871548,
+    "last_seen": 1755890152
+  },
+  {
+    "key": "{\"intent\": \"edit_sections\", \"operations\": [{\"fields\": {\"header_row\": 6}, \"op\": \"update_all\"}]}",
+    "patch_spec": {
+      "intent": "edit_sections",
+      "operations": [
+        {
+          "op": "update_all",
+          "fields": {
+            "header_row": 6
+          }
+        }
+      ]
+    },
+    "support_count": 9,
+    "confidence": 0.75,
+    "created_at": 1756394624,
+    "last_seen": 1756469783
+  }
+]

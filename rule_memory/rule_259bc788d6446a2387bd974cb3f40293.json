@@ -1,0 +1,37 @@
+{
+    "version": "1.0",
+    "user_id": "dung123",
+    "file_fingerprint": "259bc788d6446a2387bd974cb3f40293",
+    "sheets": {
+      "Sheet1": [
+        {
+          "label": "Công việc bảo dưỡng, sửa chữa",
+          "header_row": 5,
+          "start_row": 6,
+          "end_row": 32,
+          "anchor": {
+            "header_title_contains": ["các công việc thực hiện trong tháng", "năm"],
+            "header_columns_match": ["Ngày", "Mô tả công việc", "Thời gian dừng lò (h)", "Ghi chú"]
+          },
+          "end_hints": {
+            "until_next_title_contains": ["tổng hợp các dự án làm trong tháng"],
+            "or_until_blank_block": true
+          }
+        },
+        {
+          "label": "Tổng hợp các dự án làm trong tháng 2",
+          "header_row": 34,
+          "start_row": 35,
+          "end_row": 49,
+          "anchor": {
+            "header_title_contains": ["tổng hợp các dự án làm trong tháng"],
+            "header_columns_match": ["STT", "Dự án", "Tiến độ", "Ghi chú"]
+          },
+          "end_hints": {
+            "until_eof_or_blank_block": true
+          }
+        }
+      ]
+    }
+  }
+  

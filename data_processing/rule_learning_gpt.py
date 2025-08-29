@@ -22,7 +22,8 @@ Trả về JSON đúng schema:
   "header_row": int
 }
 - Không trả lời thêm chữ nào ngoài JSON.
-- Chọn header_row là dòng tiêu đề cột (1-based).
+- CHỈ SỐ LÀ 0-BASED, end_row inclusive (nếu có đề cập).
+- header_row là dòng tiêu đề cột (0-based).
 - start_keywords là cụm mở đầu vùng dữ liệu; end_keywords đánh dấu kết thúc.
 
 YÊU CẦU QUAN TRỌNG:
@@ -39,13 +40,6 @@ def _extract_json_str(text: str) -> str:
     return text[start:end+1]
 
 def _call_openai_json(user_prompt: str) -> str:
-    """
-    Trả về chuỗi JSON từ OpenAI.
-    1) Thử Responses API + response_format.
-    2) Nếu lỗi TypeError hoặc BadRequestError → fallback sang Chat Completions + response_format.
-    3) Nếu vẫn lỗi → fallback cuối: Chat Completions không response_format nhưng ép prompt 'ONLY JSON'.
-    """
-    # 1) Responses API
     try:
         resp = client.responses.create(
             model=MODEL,
@@ -58,13 +52,10 @@ def _call_openai_json(user_prompt: str) -> str:
         )
         return resp.output_text
     except TypeError:
-        # SDK cũ không hỗ trợ response_format ở Responses API
         pass
     except BadRequestError:
-        # Model không hỗ trợ JSON mode ở Responses API
         pass
 
-    # 2) Chat Completions + response_format
     try:
         resp = client.chat.completions.create(
             model=MODEL,
@@ -79,7 +70,6 @@ def _call_openai_json(user_prompt: str) -> str:
     except BadRequestError:
         pass
 
-    # 3) Fallback cuối: không dùng JSON mode, ép prompt 'ONLY JSON'
     strict_prompt = user_prompt + "\n\nHãy trả lời CHỈ một JSON hợp lệ, không kèm giải thích."
     resp = client.chat.completions.create(
         model=MODEL,
@@ -92,17 +82,18 @@ def _call_openai_json(user_prompt: str) -> str:
     return resp.choices[0].message.content
 
 def learn_rule(prompt: str) -> dict:
-    """
-    Gọi OpenAI để sinh rule và parse về dict theo schema LearnedRule.
-    """
     raw = with_backoff(lambda: _call_openai_json(prompt))
     try:
         data = LearnedRule.model_validate_json(raw)
-        return data.model_dump()
+        d = data.model_dump()
     except ValidationError:
         js = json.loads(_extract_json_str(raw))
         data = LearnedRule(**js)
-        return data.model_dump()
+        d = data.model_dump()
+
+    # Gắn index_base "zero" để downstream KHÔNG trừ 1 ở header_row
+    d["index_base"] = "zero"
+    return d
 
 def _read_df(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
     ext = (file_path or "").lower().split(".")[-1]
@@ -127,7 +118,7 @@ def _sections_hint(sections: List[Dict[str, Any]]) -> str:
         er = s.get("end_row")
         hr = s.get("header_row")
         lb = s.get("label", "")
-        lines.append(f"- label='{lb}', header_row={hr}, region=({sr}..{er}) [1-based]")
+        lines.append(f"- label='{lb}', header_row={hr}, region=({sr}..{er}) [0-based]")
     return "\n".join(lines)
 
 def learn_rule_from_sections(
@@ -137,12 +128,6 @@ def learn_rule_from_sections(
     head_rows: int = 20,
     tail_rows: int = 20
 ) -> Dict[str, Any]:
-    """
-    Học rule dựa trên sections (đã confirm hoặc auto).
-    - Đọc bảng, trích head/tail và headers làm ngữ cảnh.
-    - Đưa gợi ý về vùng (header_row, start_row, end_row, label) vào prompt.
-    - Gọi LLM để sinh rule tuân thủ schema LearnedRule.
-    """
     df = _read_df(file_path, sheet_name=sheet_name)
     context = _sample_table_context(df, head_rows=head_rows, tail_rows=tail_rows)
     hint = _sections_hint(sections)
@@ -151,7 +136,7 @@ def learn_rule_from_sections(
 Dưới đây là ngữ cảnh bảng và gợi ý các vùng section đã biết. Hãy suy luận rule tổng quát để có thể áp dụng cho các file tương tự.
 YÊU CẦU:
 - Trả về JSON theo schema đã nêu trong system prompt (không thêm text khác).
-- Giá trị header_row là 1-based.
+- Giá trị header_row là 0-based.
 - Không suy diễn ngoài phạm vi dữ liệu; nếu không chắc chắn, chọn rule an toàn (ít false positive).
 
 [CONTEXT]
@@ -162,7 +147,8 @@ YÊU CẦU:
 """.strip()
 
     rule = learn_rule(user_prompt)
-    if not isinstance(rule.get("header_row"), int) or rule["header_row"] <= 0:
+    if not isinstance(rule.get("header_row"), int) or rule["header_row"] < 0:
         hr_list = [s.get("header_row") for s in sections if isinstance(s.get("header_row"), int)]
-        rule["header_row"] = hr_list[0] if hr_list else 1
+        rule["header_row"] = hr_list[0] if hr_list else 0
+    rule["index_base"] = "zero"
     return rule

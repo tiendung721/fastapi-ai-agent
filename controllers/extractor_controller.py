@@ -1,48 +1,187 @@
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from typing import Optional, List, Dict
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException , Query , Body
+from typing import Optional, List, Dict, Tuple , Any
 import os, shutil, uuid
 import pandas as pd
+import time
+import glob
+import json
 
 from data_processing.section_detector import detect_sections_auto
 from data_processing.rule_memory import get_rule_for_fingerprint, get_fingerprint
 from data_processing.rule_based_extractor import extract_sections_with_rule
 from data_processing.chat_memory import memory
-import time
-
+from .rules_controller import _load_rules, _key , _save_rules
 # Session & models & validate
 from common.session_store import SessionStore
 from common.models import SessionData, Section
-from data_processing.validators import to_one_based, validate_sections, IndexErrorDetail
+from data_processing.validators import to_zero_based, validate_sections_zero_based, IndexErrorDetail
 
 router = APIRouter()
 UPLOAD_DIR = "uploaded_files"
+RULE_DIR = "rule_memory"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(RULE_DIR, exist_ok=True)
 
 store = SessionStore()
 
 
-def _read_df(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
-    """
-    Đọc CSV/XLSX thành DataFrame. Ưu tiên sheet_name nếu là Excel.
-    """
-    ext = os.path.splitext(file_path)[1].lower()
-    try:
-        if ext == ".csv":
-            return pd.read_csv(file_path)
-        return pd.read_excel(file_path, sheet_name=sheet_name)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Không đọc được file: {e}")
+# ============================ Helpers ============================
 
+def _read_df(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
+
+    """
+    Luôn trả về đúng 1 DataFrame.
+    - CSV -> DataFrame
+    - Excel:
+        + Nếu sheet_name truyền vào: đọc đúng sheet đó.
+        + Nếu không truyền: đọc sheet đầu tiên (index 0).
+    """
+    resolved_sheet_name = sheet_name
+    if resolved_sheet_name is None or str(resolved_sheet_name).strip() == "":
+        try:
+        # Lấy tên sheet đầu tiên để đưa lên FE (nếu cần hiển thị)
+           
+            xls = pd.ExcelFile(file_path)
+            if xls.sheet_names:
+                resolved_sheet_name = xls.sheet_names[0]
+        except Exception:
+            resolved_sheet_name = None
+
+    ext = (file_path or "").lower().split(".")[-1]
+    if ext == "csv":
+        return pd.read_csv(file_path)
+
+    # Excel
+    if sheet_name is None or str(sheet_name).strip() == "":
+        # Đọc sheet đầu tiên thay vì để None (None -> dict các sheet)
+        return pd.read_excel(file_path, sheet_name=0)
+
+    # Có chỉ định sheet_name -> đọc đúng sheet này
+    return pd.read_excel(file_path, sheet_name=sheet_name)
+
+
+def _idx_from_sid(value: str) -> Optional[int]:
+    if value is None:
+        return None
+    s = str(value).strip().upper()
+    if s.startswith("S"):
+        s = s[1:]
+    try:
+        idx = int(s) - 1
+        return idx if idx >= 0 else None
+    except Exception:
+        return None
+
+
+def apply_overrides_to_sections(sections: List[Dict], overrides: Dict) -> List[Dict]:
+    """Áp overrides **0-based** lên danh sách sections đã autodetect."""
+    if not overrides:
+        return sections
+
+    # Header chung cho tất cả sections (0-based)
+    if overrides.get("header_row") is not None:
+        try:
+            hdr = int(overrides["header_row"])  # 0-based
+            for s in sections:
+                s["header_row"] = hdr
+        except Exception:
+            pass
+
+    # Theo từng section
+    for ent in (overrides.get("sections", []) or []):
+        sel = ent.get("selector", {}) or {}
+        fields = ent.get("fields", {}) or {}
+        by = sel.get("by")
+        val = sel.get("value")
+
+        candidates: List[int] = []
+        if by == "index":
+            idx = _idx_from_sid(val)
+            if idx is not None and 0 <= idx < len(sections):
+                candidates = [idx]
+        elif by == "label":
+            for i, s in enumerate(sections):
+                if str(s.get("label", "")).strip() == str(val).strip():
+                    candidates.append(i)
+        else:
+            continue
+
+        for i in candidates:
+            for k, v in fields.items():
+                if k in ("start_row", "end_row", "header_row"):
+                    try:
+                        v = int(v)  # 0-based
+                    except Exception:
+                        pass
+                sections[i][k] = v
+
+    return sections
+
+
+def _fingerprints_for(df: pd.DataFrame, sheet_name: Optional[str]) -> List[str]:
+    """Trả về danh sách fingerprint ứng viên: [có sheet_name, không sheet_name] (loại trùng)."""
+    fps: List[str] = []
+    try:
+        fps.append(get_fingerprint(df, sheet_name=sheet_name))
+    except TypeError:
+        pass
+    fps.append(get_fingerprint(df))
+    seen, out = set(), []
+    for fp in fps:
+        if fp and fp not in seen:
+            seen.add(fp)
+            out.append(fp)
+    return out
+
+
+def _find_rule_for(
+    df: pd.DataFrame,
+    sheet_name: Optional[str],
+    user_id: str,
+) -> Tuple[Optional[dict], Optional[str], Optional[str], Optional[str]]:
+    """
+    Tìm rule theo thứ tự: (user_id, fp_with_sheet) -> (user_id, fp_no_sheet) -> (default_user, ...)
+    Trả về: (rule, matched_fp, matched_uid, rule_kind)
+    """
+    fp_list = _fingerprints_for(df, sheet_name)
+
+    # Thử đúng user_id trước
+    for fp in fp_list:
+        try:
+            rule = get_rule_for_fingerprint(fp, user_id=user_id)
+            if rule:
+                kind = "overrides" if (isinstance(rule, dict) and "overrides" in rule) else "structured"
+                return rule, fp, user_id, kind
+        except Exception:
+            pass
+
+    # Fallback default_user (phòng khi lưu nhầm user)
+    if user_id != "default_user":
+        for fp in fp_list:
+            try:
+                rule = get_rule_for_fingerprint(fp, user_id="default_user")
+                if rule:
+                    kind = "overrides" if (isinstance(rule, dict) and "overrides" in rule) else "structured"
+                    return rule, fp, "default_user", kind
+            except Exception:
+                pass
+
+    return None, None, None, None
+
+
+def _list_rule_files_for_user(user_id: str) -> List[str]:
+    """Liệt kê các file rule hiện có cho user (debug)."""
+    pattern = os.path.join(RULE_DIR, f"{user_id}_*.json")
+    return [os.path.basename(p) for p in glob.glob(pattern)]
+
+
+# ============================ Endpoints ============================
 
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
-    user_id: Optional[str] = Form(None)
+    user_id: Optional[str] = Form(None),
 ):
-    """
-    Nhận file đầu vào, lưu thành /uploaded_files/{session_id}.{ext}
-    và khởi tạo SessionData trong SessionStore.
-    """
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in [".xlsx", ".xls", ".csv"]:
         raise HTTPException(status_code=400, detail="Chỉ nhận .xlsx/.xls/.csv")
@@ -56,81 +195,92 @@ async def upload_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi lưu file: {e}")
 
-    # Lưu session (kèm user_id nếu có)
     store.upsert(SessionData(session_id=session_id, user_id=user_id, file_path=saved_path))
 
     return {
         "ok": True,
         "code": "UPLOAD_OK",
-        "data": {"session_id": session_id, "file_path": saved_path}
+        "data": {"session_id": session_id, "file_path": saved_path},
     }
 
 
 @router.post("/preview")
 async def preview(
     session_id: str = Form(...),
-    sheet_name: Optional[str] = Form(None)
+    sheet_name: Optional[str] = Form(None),
+    user_id: Optional[str] = Form(None),
 ):
-    """
-    - Lấy session & đọc dữ liệu
-    - Ưu tiên áp RULE (theo user_id + fingerprint). Không có rule (hoặc rule không match) thì detect auto
-    - Chuẩn hóa & validate 1-based
-    - Lưu auto_sections vào SessionStore
-    """
     # 1) Lấy session
     data = store.get(session_id)
     if not data:
-        raise HTTPException(status_code=404, detail=" Session không tồn tại")
+        raise HTTPException(status_code=404, detail="Session không tồn tại")
+
+    # 1.1) Đồng bộ user_id
+    uid = getattr(data, "user_id", None)
+    if not uid and user_id:
+        uid = user_id
+        try:
+            data.user_id = uid
+            store.upsert(data)
+        except Exception:
+            pass
+    if not uid:
+        uid = "default_user"
 
     # 2) Đọc dữ liệu
     df = _read_df(data.file_path, sheet_name=sheet_name)
     if df.shape[0] == 0:
         raise HTTPException(status_code=400, detail="File/sheet rỗng")
 
-    # 3) Dò sections (ưu tiên rule đã học → không có/không match thì auto)
-    uid = getattr(data, "user_id", None) or "default_user"
+    # 3) Tìm rule
+    rule, matched_fp, matched_uid, rule_kind = _find_rule_for(df, sheet_name, uid)
 
-    # Tương thích 2 phiên bản get_fingerprint (có/không có sheet_name)
-    try:
-        fp = get_fingerprint(df, sheet_name=sheet_name)
-    except TypeError:
-        fp = get_fingerprint(df)
-
-    rule = None
-    try:
-        rule = get_rule_for_fingerprint(fp, user_id=uid)
-    except Exception:
-        # an toàn: nếu đọc rule lỗi thì coi như không có rule
-        rule = None
-
+    # 4) Lấy sections
     used_rule = False
     try:
         if rule:
-            sections = extract_sections_with_rule(df, rule) or []
-            if len(sections) > 0:
+            if rule_kind == "overrides":
+                base_sections = detect_sections_auto(df)  # 0-based sẵn
+                before = [dict(x) for x in base_sections]
+                sections = apply_overrides_to_sections(base_sections, rule.get("overrides", {}))
                 used_rule = True
+                overrides_effective = (sections != before)
             else:
-                # 🔁 FALLBACK: rule không cho section nào → quay về auto
-                sections = detect_sections_auto(df)
+                # RULE "structured"
+                if isinstance(rule, dict) and isinstance(rule.get("sections"), list) and rule.get("type") == "structured":
+                    sections = rule["sections"]
+                    used_rule = len(sections) > 0
+                    overrides_effective = None
+                else:
+                    sections = extract_sections_with_rule(df, rule) or []
+                    used_rule = len(sections) > 0
+                    overrides_effective = None
         else:
             sections = detect_sections_auto(df)
+            overrides_effective = None
     except Exception:
-        # Nếu extractor phát sinh lỗi → fallback auto
         sections = detect_sections_auto(df)
+        used_rule = False
+        overrides_effective = None
 
-    # 4) CHUẨN HÓA + VALIDATE 1-based
+    # 5) CHUẨN HÓA + VALIDATE 0-based
     try:
-        sections = to_one_based(sections, nrows=df.shape[0])
-        sections = validate_sections(sections, nrows=df.shape[0])
+        # ❗ Không convert 0-based nếu đã 0-based — chỉ convert khi thực sự 1-based (to_zero_based đã an toàn)
+        sections = to_zero_based(sections, nrows=df.shape[0])
+        sections = validate_sections_zero_based(sections, nrows=df.shape[0])
     except IndexErrorDetail as ie:
-        # Trả mã lỗi & thông tin chi tiết index
         return {"ok": False, "code": ie.code, "error": str(ie)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Sections không hợp lệ: {e}")
 
-    # 5) LƯU auto_sections vào session (Pydantic → ràng buộc chặt)
+    # 6) Lưu session
     data.auto_sections = [Section(**s) for s in sections]
-    # Ghi lại user_id (nếu trước đó null) để lần sau tra đúng kho rule theo user
+    data.used_rule = bool(used_rule)
+    try:
+        fps = _fingerprints_for(df, sheet_name)
+        data.fingerprint = matched_fp or (fps[-1] if fps else None)
+    except Exception:
+        pass
     if not getattr(data, "user_id", None):
         try:
             data.user_id = uid
@@ -138,23 +288,159 @@ async def preview(
             pass
     store.upsert(data)
 
-    memory.add_record(uid or "anonymous", {
-        "event": "preview",
-        "session_id": session_id,
-        "used_rule": bool(used_rule),
-        "sections_count": len(sections),
-        "nrows": int(df.shape[0]),
-        "timestamp": int(time.time())
-    })
+    # 7) Log & 8) Debug info
+    rule_files_for_user = _list_rule_files_for_user(matched_uid or uid)
+    source = "rule" if used_rule else "autodetect"
+    try:
+        print(f"[PREVIEW] uid={uid} fp={matched_fp} kind={rule_kind} used_rule={used_rule}")
+        print(f"[PREVIEW] src={source} n={len(sections)} first={sections[0] if sections else None}")
+    except Exception:
+        pass
 
-
-    # 6) Trả về: luôn kèm nrows + used_rule để client dễ debug
     return {
         "ok": True,
         "code": "PREVIEW_OK",
         "data": {
-            "auto_sections": sections,
+            "session_id": session_id,
+            "fingerprints_tried": _fingerprints_for(df, sheet_name),
+            "matched_fingerprint": matched_fp,
+            "matched_user_id": matched_uid,
+            "rule_kind": rule_kind,
+            "rule_files_for_user": rule_files_for_user,
+            "used_rule": used_rule,
+            "sections_source": source,
+            "index_base": "zero",
+            "sections": sections,
             "nrows": int(df.shape[0]),
-            "used_rule": used_rule
-        }
+            "overrides_effective": (overrides_effective if rule_kind == "overrides" else None),
+        },
     }
+
+@router.post("/confirm_sections")
+async def confirm_sections(
+    # hỗ trợ cả query lẫn form cho session_id/id
+    session_id_f: Optional[str] = Form(None),
+    id_f: Optional[str] = Form(None),
+    user_id_f: Optional[str] = Form(None),
+    sheet_name_f: Optional[str] = Form(None),
+
+    session_id_q: Optional[str] = Query(None),
+    id_q: Optional[str] = Query(None),
+    user_id_q: Optional[str] = Query(None),
+    sheet_name_q: Optional[str] = Query(None),
+
+    # body có thể là {"sections":[...]} hoặc raw list [...]
+    body: Any = Body(default=None),
+    # hoặc form-data: sections="<json string>"
+    sections_form: Optional[str] = Form(None),
+):
+    """
+    Xác nhận sections (0-based) cho session và HỌC RULE cho (user_id, sheet_name).
+    Chấp nhận 3 kiểu input:
+      1) JSON body: {"sections": [...]}
+      2) JSON body raw: [...]
+      3) Form-data: sections="<json string>"
+    Đồng thời hỗ trợ session_id qua cả form/query và alias 'id'.
+    """
+
+    # 0) Resolve session_id / user_id / sheet_name
+    session_id = session_id_f or session_id_q or id_f or id_q
+    user_id = user_id_f or user_id_q
+    sheet_name = sheet_name_f or sheet_name_q
+
+    if not session_id:
+        raise HTTPException(status_code=422, detail="session_id (hoặc id) là bắt buộc")
+
+    data = store.get(session_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Session không tồn tại")
+
+    # đồng bộ user_id/session
+    if not user_id:
+        user_id = getattr(data, "user_id", None) or "default_user"
+    else:
+        try:
+            data.user_id = user_id
+            store.upsert(data)
+        except Exception:
+            pass
+
+    # 1) Lấy sections từ body/form
+    payload_sections = None
+    # body dạng dict: {"sections": [...]}
+    if isinstance(body, dict) and "sections" in body:
+        payload_sections = body.get("sections")
+    # body là list [...]
+    elif isinstance(body, list):
+        payload_sections = body
+    # form 'sections' = "<json string>"
+    elif sections_form:
+        try:
+            parsed = json.loads(sections_form)
+            if isinstance(parsed, dict) and "sections" in parsed:
+                payload_sections = parsed["sections"]
+            elif isinstance(parsed, list):
+                payload_sections = parsed
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"sections (form) không phải JSON hợp lệ: {e}")
+
+    if not isinstance(payload_sections, list) or not payload_sections:
+        raise HTTPException(status_code=422, detail="Thiếu hoặc sai định dạng 'sections'")
+
+    # 2) Đọc file để biết nrows (phục vụ validate)
+    df = _read_df(data.file_path, sheet_name=sheet_name)
+    if df.shape[0] == 0:
+        raise HTTPException(status_code=400, detail="File/sheet rỗng")
+
+    # 3) Chuẩn hoá & validate 0-based
+    try:
+        sections0 = to_zero_based(payload_sections, nrows=df.shape[0])
+        sections0 = validate_sections_zero_based(sections0, nrows=df.shape[0])
+    except IndexErrorDetail as ie:
+        return {"ok": False, "code": ie.code, "error": str(ie)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Sections không hợp lệ: {e}")
+
+    # 4) Lưu vào SessionStore
+    try:
+        data.confirmed_sections = [Section(**s) for s in sections0]
+        data.auto_sections = data.auto_sections or [Section(**s) for s in sections0]  # fallback
+        data.used_rule = False  # vì đây là xác nhận thủ công
+        store.upsert(data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi lưu session: {e}")
+
+    # 5) HỌC RULE (structured) cho (user_id, sheet_name)
+    #    Lần sau /preview sẽ override autodetect bằng list này.
+    rule_obj = {"type": "structured", "sections": sections0}
+
+    # dùng helpers của rules_controller nếu có; nếu không, fallback tự ghi file
+    try:
+        rules = _load_rules()
+        rules[_key(user_id or "default_user", sheet_name)] = rule_obj
+        try:
+            _save_rules(rules)  # nếu có trong rules_controller
+        except Exception:
+            # fallback: tự lưu ra output/rules.json
+            OUTPUT_DIR = os.getenv("OUTPUT_DIR", "output")
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            RULES_PATH = os.path.join(OUTPUT_DIR, "rules.json")
+            with open(RULES_PATH, "w", encoding="utf-8") as f:
+                json.dump(rules, f, ensure_ascii=False, indent=2)
+        learned = True
+    except Exception:
+        learned = False  # không làm hỏng confirm nếu phần học rule lỗi
+
+    return {
+        "ok": True,
+        "code": "CONFIRM_OK",
+        "data": {
+            "session_id": session_id,
+            "user_id": user_id,
+            "sheet_name": sheet_name,
+            "n_sections": len(sections0),
+            "learned_rule": learned,
+            "rule_type": "structured",
+        },
+    }
+

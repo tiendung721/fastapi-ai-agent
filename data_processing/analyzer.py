@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 import pandas as pd
 
 from .auto_group_by import choose_group_by
@@ -10,23 +10,29 @@ from .auto_group_by import choose_group_by
 
 def _normalize_region(df: pd.DataFrame, header_row: int, end_row: int) -> pd.DataFrame:
     """
-    Convert a sheet-level dataframe into a region dataframe using 1-based indexes.
-    header_row: 1-based header row index in the sheet df
-    end_row   : 1-based inclusive end row index in the sheet df
-    Returns region df with correct columns and data rows (header removed).
+    Convert a sheet-level dataframe into a region dataframe using 0-based indexes.
+    - header_row: 0-based header row index in the sheet df
+    - end_row   : 0-based inclusive end row index in the sheet df
+
+    Returns:
+      region df with columns set from the header row, and data rows with the header removed.
     """
-    # clamp safety
     n = df.shape[0]
-    header_row = max(1, min(header_row, n))
-    end_row = max(header_row, min(end_row, n))
+    if n == 0:
+        return pd.DataFrame()
 
-    # set columns from header row (1-based -> 0-based)
-    header_values = df.iloc[header_row - 1].astype(str).tolist()
-    region = df.iloc[header_row - 1 : end_row].copy()
+    # clamp to 0-based valid bounds
+    header_row = max(0, min(header_row, n - 1))
+    end_row = max(header_row, min(end_row, n - 1))
 
-    # If duplicated column names occur, disambiguate
-    cols = []
-    seen = {}
+    # set columns from header row (0-based)
+    header_values = df.iloc[header_row].astype(str).tolist()
+    # slice inclusive of end_row → iloc uses [start:end), so +1
+    region = df.iloc[header_row : end_row + 1].copy()
+
+    # Disambiguate duplicated/empty column names
+    cols: List[str] = []
+    seen: Dict[str, int] = {}
     for c in header_values:
         k = c.strip() if isinstance(c, str) else str(c)
         if k == "" or k.lower() == "nan":
@@ -43,7 +49,7 @@ def _normalize_region(df: pd.DataFrame, header_row: int, end_row: int) -> pd.Dat
     if region.shape[0] > 0:
         region = region.iloc[1:].reset_index(drop=True)
 
-    # Trim empty columns (all-nan) – optional but useful
+    # Trim empty columns (all-nan)
     if region.shape[0] > 0:
         region = region.dropna(axis=1, how="all")
 
@@ -106,29 +112,37 @@ def _numeric_summary(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
     return out
 
 
-def _analyze_single_region(sheet_df: pd.DataFrame, section: Dict[str, Any], params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _analyze_single_region(
+    sheet_df: pd.DataFrame,
+    section: Dict[str, Any],
+    params: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
-    Analyze one region defined by a section (1-based indices).
+    Analyze one region defined by a section (0-based indices, end_row inclusive).
     section = {start_row, end_row, header_row, label?}
     """
     params = params or {}
-    sr = int(section["start_row"])  # kept for reference if needed
-    er = int(section["end_row"])    # kept for reference if needed
+    sr = int(section["start_row"])
+    er = int(section["end_row"])
     hr = int(section["header_row"])
 
     region = _normalize_region(sheet_df, header_row=hr, end_row=er)
 
     # choose group_by
     group_by = params.get("group_by")
-    if not group_by or group_by not in region.columns:
+    if not group_by or (region.shape[1] > 0 and group_by not in region.columns):
         group_by = choose_group_by(region)
 
     # aggregation: if group_by exists
     group_summary: Dict[str, int] = {}
     if group_by and group_by in region.columns:
         try:
-            group_summary = region.groupby(group_by, dropna=True).size().sort_values(ascending=False).to_dict()
-            # cast to int for JSON safety
+            group_summary = (
+                region.groupby(group_by, dropna=True)
+                .size()
+                .sort_values(ascending=False)
+                .to_dict()
+            )
             group_summary = {str(k): int(v) for k, v in group_summary.items()}
         except Exception:
             group_summary = {}
@@ -167,10 +181,14 @@ def _analyze_single_region(sheet_df: pd.DataFrame, section: Dict[str, Any], para
 # Public entry
 # -----------------------------
 
-def run_analysis(sheet_df: pd.DataFrame, sections: List[Dict[str, Any]], params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def run_analysis(
+    sheet_df: pd.DataFrame,
+    sections: List[Dict[str, Any]],
+    params: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
     Run analysis for all sections on a single sheet dataframe.
-    - Expects 1-based validated sections (validate before calling).
+    - Expects **0-based** validated sections (validate before calling).
     - Returns a machine-friendly dict.
     """
     results: List[Dict[str, Any]] = []
@@ -189,7 +207,6 @@ def run_analysis(sheet_df: pd.DataFrame, sections: List[Dict[str, Any]], params:
             }
         results.append(res)
 
-    # high-level rollup (optional): count rows/sections
     total_rows = int(sum(r.get("rows", 0) for r in results if isinstance(r.get("rows"), int)))
 
     return {

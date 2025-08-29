@@ -13,7 +13,6 @@ def get_fingerprint(df, sheet_name: Optional[str] = None) -> str:
     Tạo fingerprint dựa trên:
     - Danh sách headers (lower + strip)
     - (Tùy chọn) sheet_name để phân biệt rule theo sheet
-    Có thể nâng cấp bằng cách thêm kích thước, số sheet, hoặc checksum nội dung mẫu.
     """
     headers = [str(col).strip().lower() for col in df.columns]
     base_str = "|".join(headers)
@@ -23,7 +22,6 @@ def get_fingerprint(df, sheet_name: Optional[str] = None) -> str:
 
 
 def _safe_user_id(user_id: str) -> str:
-    """Loại bỏ ký tự nguy hiểm khỏi user_id."""
     return re.sub(r"[^a-zA-Z0-9_\-]", "_", user_id or "default_user")
 
 
@@ -33,9 +31,6 @@ def _get_rule_file_path(fingerprint: str, user_id: str = "default_user") -> str:
 
 
 def save_rule_for_fingerprint(fingerprint: str, rule: dict, user_id: str = "default_user") -> None:
-    """
-    Ghi đè/upsert rule cho (user_id, fingerprint).
-    """
     file_path = _get_rule_file_path(fingerprint, user_id)
     try:
         with open(file_path, "w", encoding="utf-8") as f:
@@ -45,9 +40,6 @@ def save_rule_for_fingerprint(fingerprint: str, rule: dict, user_id: str = "defa
 
 
 def get_rule_for_fingerprint(fingerprint: str, user_id: str = "default_user") -> Optional[dict]:
-    """
-    Lấy rule theo (user_id, fingerprint).
-    """
     file_path = _get_rule_file_path(fingerprint, user_id)
     if not os.path.exists(file_path):
         return None
@@ -55,6 +47,5 @@ def get_rule_for_fingerprint(fingerprint: str, user_id: str = "default_user") ->
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        # Nếu JSON hỏng → bỏ qua rule
         print(f"[WARN] Không đọc được rule {file_path}: {e}")
         return None

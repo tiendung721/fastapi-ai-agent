@@ -1,15 +1,18 @@
-from fastapi import APIRouter, HTTPException, Query
-from typing import Optional
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from typing import Optional, Dict, Any
 import pandas as pd
+import time
+
 from common.session_store import SessionStore
-from data_processing.validators import validate_sections
+from data_processing.validators import validate_sections_zero_based, to_zero_based
 from data_processing.analyzer import run_analysis
 from data_processing.planner import build_report
 from data_processing.rule_learning_gpt import learn_rule_from_sections
 from data_processing.rule_memory import get_fingerprint, save_rule_for_fingerprint
-from data_processing.exporter import save_report_excel  # ✅ Thêm exporter
+from data_processing.exporter import save_report_excel
 from data_processing.chat_memory import memory
-import time
+from data_processing.rule_learning_from_chat import promote_best_candidates
 
 router = APIRouter()
 store = SessionStore()
@@ -20,97 +23,140 @@ def _load_df(file_path: str, sheet_name: Optional[str] = None):
         return pd.read_csv(file_path)
     return pd.read_excel(file_path, sheet_name=sheet_name)
 
-def _pick_sections(data):
+def _pick_sections(data) -> tuple[list[dict], bool]:
     if data.confirmed_sections and len(data.confirmed_sections) > 0:
         return [s.model_dump() for s in data.confirmed_sections], True
     if data.auto_sections and len(data.auto_sections) > 0:
         return [s.model_dump() for s in data.auto_sections], False
     return [], False
 
-@router.post("/run_final")
-def run_final(
-    session_id: str,
-    sheet_name: Optional[str] = None,
-    force: bool = Query(False),
-    user_id: Optional[str] = "default_user"
-):
-    """
-    - Ưu tiên chạy với confirmed_sections; nếu chưa confirm và force=false → yêu cầu xác nhận.
-    - Nếu force=true → dùng auto_sections.
-    - Tự học rule nếu dùng auto_sections.
-    - Xuất file báo cáo Excel sau khi hoàn tất.
-    """
-    data = store.get(session_id)
+class FinalIn(BaseModel):
+    user_id: str
+    session_id: str
+    sheet_name: Optional[str] = None
+    force: bool = False
+
+@router.post("/final")
+def run_final(payload: FinalIn) -> Dict[str, Any]:
+    data = store.get(payload.session_id)
     if not data:
-        raise HTTPException(status_code=404, detail=" Session ID không tồn tại.")
-    df = _load_df(data.file_path, sheet_name=sheet_name)
+        raise HTTPException(status_code=404, detail="Session ID không tồn tại.")
+
+    df = _load_df(data.file_path, sheet_name=payload.sheet_name)
 
     sections, is_confirmed = _pick_sections(data)
     if not sections:
-        raise HTTPException(status_code=400, detail=" Không có sections (auto hoặc confirmed).")
+        return {
+            "ok": False,
+            "code": "NO_SECTIONS",
+            "error": "Không có sections (auto hoặc confirmed). Hãy /preview và/hoặc /chat trước.",
+        }
 
-    sections = validate_sections(sections, nrows=df.shape[0])
+    # 0‑based an toàn: chỉ convert khi thực sự 1‑based (theo validators.to_zero_based mới)
+    try:
+        sections = to_zero_based(sections, nrows=df.shape[0])
+        sections = validate_sections_zero_based(sections, nrows=df.shape[0])
+    except Exception as e:
+        return {"ok": False, "code": "INVALID_SECTIONS", "error": f"Sections không hợp lệ: {e}"}
 
-    if (not is_confirmed) and (not force):
+    if (not is_confirmed) and (not payload.force):
         return {
             "ok": False,
             "code": "NEED_CONFIRM",
-            "message": "Chưa xác nhận sections; thêm force=true để chạy tạm bằng auto."
+            "error": "Chưa xác nhận sections; gửi force=true để chạy tạm bằng auto hoặc hãy /confirm_sections.",
         }
 
-    # 1️⃣ Phân tích dữ liệu
     analysis = run_analysis(df, sections, params=None)
-
-    # 2️⃣ Sinh báo cáo text
     report = build_report(analysis)
 
-    # 3️⃣ Xuất file Excel
+    export_path = None
     try:
-        export_path = save_report_excel(user_id, report, folder="output")
-    except Exception as e:
+        export_path = save_report_excel(payload.user_id, report, folder="output")
+    except Exception:
         export_path = None
 
-    # 4️⃣ Tự học rule nếu dùng auto_sections
-    auto_learn = False
-    if not is_confirmed:
+    # Lưu RULE
+    auto_learned_rule = False
+    warn = None
+    fp = None
+    try:
+        fp = get_fingerprint(df, sheet_name=payload.sheet_name)
+    except TypeError:
+        fp = get_fingerprint(df)
+
+    if is_confirmed:
         try:
-            fp = get_fingerprint(df)
+            structured_rule = {
+                "version": "1.2",
+                "type": "structured",
+                "index_base": "zero",
+                "header_row": int(sections[0]["header_row"]) if sections else 0,
+                "sections": sections,
+            }
+            save_rule_for_fingerprint(fp, structured_rule, user_id=payload.user_id)
+        except Exception as e:
+            warn = (warn or "") + f" | Lưu structured rule gặp lỗi: {e}"
+    else:
+        try:
             learned_rule = learn_rule_from_sections(
                 file_path=data.file_path,
                 sections=sections,
-                sheet_name=sheet_name
+                sheet_name=payload.sheet_name,
             )
-            save_rule_for_fingerprint(fp, learned_rule, user_id=user_id)
-            auto_learn = True
+            # đảm bảo 0-based nếu model trả về 1-based
+            if isinstance(learned_rule, dict):
+                if isinstance(learned_rule.get("sections"), list):
+                    learned_rule["sections"] = validate_sections_zero_based(
+                        to_zero_based(learned_rule["sections"], nrows=df.shape[0]),
+                        nrows=df.shape[0]
+                    )
+                if isinstance(learned_rule.get("header_row"), int) and learned_rule.get("index_base") != "zero":
+                    hr = max(0, int(learned_rule["header_row"]) - 1)
+                    learned_rule["header_row"] = hr
+                learned_rule["index_base"] = "zero"
+                learned_rule["version"] = "1.2"
+            save_rule_for_fingerprint(fp, learned_rule, user_id=payload.user_id)
+            auto_learned_rule = True
         except Exception as e:
-            return {
-                "ok": True,
-                "code": "FINAL_OK",
-                "data": {
-                    "analysis": analysis,
-                    "report": report,
-                    "export_file": export_path
-                },
-                "warn": f"Auto-learn rule (force/auto_sections) gặp lỗi, đã bỏ qua: {e}"
-            }
-        
-    memory.add_record(user_id or "anonymous", {
-        "event": "final",
-        "session_id": session_id,
-        "sections_count": analysis.get("sections_count") if isinstance(analysis, dict) else None,
-        "total_rows": analysis.get("total_rows") if isinstance(analysis, dict) else None,
-        "export_file": export_path,
-        "timestamp": int(time.time())
-    })
+            warn = (warn or "") + f" | Auto-learn rule (force/auto_sections) gặp lỗi, đã bỏ qua: {e}"
 
+    promoted = False
+    try:
+        if fp is None:
+            fp = get_fingerprint(df, sheet_name=payload.sheet_name)
+        promoted = promote_best_candidates(payload.user_id, fp)
+    except Exception:
+        promoted = False
 
-    return {
+    try:
+        memory.add_record(
+            payload.user_id or "anonymous",
+            {
+                "event": "final",
+                "session_id": payload.session_id,
+                "used_confirmed_sections": is_confirmed,
+                "sections_count": analysis.get("sections_count") if isinstance(analysis, dict) else None,
+                "total_rows": analysis.get("total_rows") if isinstance(analysis, dict) else None,
+                "export_file": export_path,
+                "timestamp": int(time.time()),
+            },
+        )
+    except Exception:
+        pass
+
+    resp = {
         "ok": True,
         "code": "FINAL_OK",
         "data": {
             "analysis": analysis,
             "report": report,
-            "export_file": export_path
+            "export": {"excel_path": export_path},
         },
-        "auto_learned_rule": auto_learn
+        "used_confirmed_sections": is_confirmed,
+        "auto_learned_rule": auto_learned_rule,
+        "promoted": promoted,
+        "index_base": "zero",
     }
+    if warn:
+        resp["warn"] = warn.strip(" |")
+    return resp

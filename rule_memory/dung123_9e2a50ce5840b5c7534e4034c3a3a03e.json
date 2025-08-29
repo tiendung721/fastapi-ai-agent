@@ -1,0 +1,20 @@
+{
+  "version": "1.2",
+  "type": "structured",
+  "index_base": "zero",
+  "header_row": 4,
+  "sections": [
+    {
+      "start_row": 5,
+      "end_row": 31,
+      "header_row": 4,
+      "label": "Công việc bảo dưỡng, sửa chữa"
+    },
+    {
+      "start_row": 34,
+      "end_row": 48,
+      "header_row": 33,
+      "label": "Tổng hợp các dự án làm trong tháng 2"
+    }
+  ]
+}
