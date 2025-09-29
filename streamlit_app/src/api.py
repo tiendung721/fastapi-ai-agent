@@ -1,4 +1,3 @@
-# streamlit_app/src/api.py
 import os
 import mimetypes
 import httpx
@@ -63,9 +62,7 @@ def _delete(path: str) -> Dict[str, Any]:
         except Exception:
             return {"ok": False, "code": "BAD_JSON", "error": r.text}
 
-# -------------------------------
-# API public gọi từ các phần UI
-# -------------------------------
+
 
 def upload_file(file, user_id: str = "default_user", sheet_name: Optional[str] = None) -> Dict[str, Any]:
     filename = getattr(file, "name", "upload.bin")
@@ -103,7 +100,7 @@ def confirm_sections(
     if not sid:
         return {"ok": False, "code": "MISSING_SESSION_ID", "error": "session_id trống ở FE"}
 
-    # ---------- Try A: gửi cả Form (data) + Query (params) cùng lúc ----------
+    
     formA: Dict[str, Any] = {
         "session_id": sid,
         "id": sid,  # alias phổ biến
@@ -127,12 +124,12 @@ def confirm_sections(
     if isinstance(rA, dict) and (rA.get("ok") is True or "message" in rA or "data" in rA):
         return rA
 
-    # ---------- Try B: Query + JSON body {"sections":[...]} ----------
+    
     rB = _post("/confirm_sections", params=paramsA, json={"sections": sections})
     if isinstance(rB, dict) and (rB.get("ok") is True or "message" in rB or "data" in rB):
         return rB
 
-    # ---------- Try C: Pure JSON body đầy đủ ----------
+    
     bodyC: Dict[str, Any] = {"session_id": sid, "id": sid, "sections": sections}
     if user_id:
         bodyC["user_id"] = user_id
@@ -168,3 +165,25 @@ def health() -> Dict[str, Any]:
 def save_rule(user_id: str, sheet_name: Optional[str], sections: List[Dict[str, Any]]) -> Dict[str, Any]:
     payload = {"user_id": user_id, "sheet_name": sheet_name, "sections": sections}
     return _post("/rules/save", json=payload)
+
+
+def sections_get(session_id: str) -> dict:
+    with _client() as c:
+        r = c.get(f"{BASE}/sessions/{session_id}/sections")
+        return _json.loads(r.text)
+
+def sections_replace(session_id: str, sections: list[dict]) -> dict:
+    with _client() as c:
+        r = c.put(f"{BASE}/sessions/{session_id}/sections", json={"sections": sections})
+        return _json.loads(r.text)
+
+def sections_add(session_id: str, section: dict) -> dict:
+    with _client() as c:
+        r = c.post(f"{BASE}/sessions/{session_id}/sections", json=section)
+        return _json.loads(r.text)
+
+def sections_delete(session_id: str, index: int) -> dict:
+    with _client() as c:
+        r = c.delete(f"{BASE}/sessions/{session_id}/sections/{index}")
+        return _json.loads(r.text)
+

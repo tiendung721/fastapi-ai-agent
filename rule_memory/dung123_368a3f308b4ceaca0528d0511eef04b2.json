@@ -1,0 +1,32 @@
+{
+  "version": 1759158219,
+  "updated_at": 1759158219,
+  "overrides": {
+    "sections": [
+      {
+        "selector": {
+          "by": "index",
+          "value": "S1"
+        },
+        "fields": {
+          "start_row": 6,
+          "end_row": 31,
+          "header_row": 5,
+          "label": "Nhat ky cong viec"
+        }
+      },
+      {
+        "selector": {
+          "by": "index",
+          "value": "S2"
+        },
+        "fields": {
+          "start_row": 35,
+          "end_row": 49,
+          "header_row": 34,
+          "label": "Du an thang 2"
+        }
+      }
+    ]
+  }
+}

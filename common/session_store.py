@@ -28,7 +28,6 @@ class SessionStore:
             con.close()
 
     def upsert(self, data: SessionData) -> None:
-    # DUMP THEO CHUẨN JSON (convert datetime → ISO string)
         js = data.model_dump(mode="json")
         js["updated_at"] = datetime.utcnow().isoformat()
 

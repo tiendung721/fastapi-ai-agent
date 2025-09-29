@@ -37,7 +37,7 @@ def _read_df(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
     resolved_sheet_name = sheet_name
     if resolved_sheet_name is None or str(resolved_sheet_name).strip() == "":
         try:
-        # Lấy tên sheet đầu tiên để đưa lên FE (nếu cần hiển thị)
+        
            
             xls = pd.ExcelFile(file_path)
             if xls.sheet_names:
@@ -47,15 +47,15 @@ def _read_df(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
 
     ext = (file_path or "").lower().split(".")[-1]
     if ext == "csv":
-        return pd.read_csv(file_path)
+        return pd.read_csv(file_path, header=None)
 
-    # Excel
+    
     if sheet_name is None or str(sheet_name).strip() == "":
-        # Đọc sheet đầu tiên thay vì để None (None -> dict các sheet)
+        
         return pd.read_excel(file_path, sheet_name=0)
 
-    # Có chỉ định sheet_name -> đọc đúng sheet này
-    return pd.read_excel(file_path, sheet_name=sheet_name, header=None)
+    
+    return pd.read_excel(file_path, sheet_name=0, header=None)
 
 
 
@@ -77,10 +77,10 @@ def apply_overrides_to_sections(sections: List[Dict], overrides: Dict) -> List[D
     if not overrides:
         return sections
 
-    # Header chung cho tất cả sections (0-based)
+    
     if overrides.get("header_row") is not None:
         try:
-            hdr = int(overrides["header_row"])  # 0-based
+            hdr = int(overrides["header_row"])  
             for s in sections:
                 s["header_row"] = hdr
         except Exception:
@@ -109,7 +109,7 @@ def apply_overrides_to_sections(sections: List[Dict], overrides: Dict) -> List[D
             for k, v in fields.items():
                 if k in ("start_row", "end_row", "header_row"):
                     try:
-                        v = int(v)  # 0-based
+                        v = int(v)  
                     except Exception:
                         pass
                 sections[i][k] = v
@@ -144,7 +144,7 @@ def _find_rule_for(
     """
     fp_list = _fingerprints_for(df, sheet_name)
 
-    # Thử đúng user_id trước
+    
     for fp in fp_list:
         try:
             rule = get_rule_for_fingerprint(fp, user_id=user_id)
@@ -154,7 +154,7 @@ def _find_rule_for(
         except Exception:
             pass
 
-    # Fallback default_user (phòng khi lưu nhầm user)
+    #
     if user_id != "default_user":
         for fp in fp_list:
             try:
@@ -208,12 +208,11 @@ async def preview(
     sheet_name: Optional[str] = Form(None),
     user_id: Optional[str] = Form(None),
 ):
-    # 1) Lấy session
+   
     data = store.get(session_id)
     if not data:
         raise HTTPException(status_code=404, detail="Session không tồn tại")
 
-    # 1.1) Đồng bộ user_id
     uid = getattr(data, "user_id", None)
     if not uid and user_id:
         uid = user_id
@@ -225,15 +224,14 @@ async def preview(
     if not uid:
         uid = "default_user"
 
-    # 2) Đọc dữ liệu
     df = _read_df(data.file_path, sheet_name=sheet_name)
     if df.shape[0] == 0:
         raise HTTPException(status_code=400, detail="File/sheet rỗng")
 
-    # 3) Tìm rule
+    
     rule, matched_fp, matched_uid, rule_kind = _find_rule_for(df, sheet_name, uid)
 
-    # 4) Lấy sections
+    
     used_rule = False
     try:
         if rule:
@@ -261,9 +259,9 @@ async def preview(
         used_rule = False
         overrides_effective = None
 
-    # 5) CHUẨN HÓA + VALIDATE 0-based
+    
     try:
-        # ❗ Không convert 0-based nếu đã 0-based — chỉ convert khi thực sự 1-based (to_zero_based đã an toàn)
+        
         sections = to_zero_based(sections, nrows=df.shape[0])
         sections = validate_sections_zero_based(sections, nrows=df.shape[0])
     except IndexErrorDetail as ie:
@@ -271,7 +269,7 @@ async def preview(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Sections không hợp lệ: {e}")
 
-    # 6) Lưu session
+    
     data.auto_sections = [Section(**s) for s in sections]
     data.used_rule = bool(used_rule)
     try:
@@ -286,7 +284,7 @@ async def preview(
             pass
     store.upsert(data)
 
-    # 7) Log & 8) Debug info
+    
     rule_files_for_user = _list_rule_files_for_user(matched_uid or uid)
     source = "rule" if used_rule else "autodetect"
     try:

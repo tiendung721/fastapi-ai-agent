@@ -1,4 +1,3 @@
-# section_detector.py
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import pandas as pd

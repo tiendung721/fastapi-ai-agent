@@ -5,9 +5,6 @@ class IndexErrorDetail(Exception):
         self.code = code
         super().__init__(message)
 
-# ===========================
-# ZERO-BASED HELPERS
-# ===========================
 
 def to_zero_based(sections: List[Dict], nrows: int) -> List[Dict]:
     """

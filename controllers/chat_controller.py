@@ -7,16 +7,16 @@ import pandas as pd
 from common.session_store import SessionStore
 from common.models import Section
 from data_processing.chat_memory import memory
-from services.intent_llm import parse_intent_llm  # ← dùng LLM để hiểu câu nói
+from services.intent_llm import parse_intent_llm 
 
-# ★ Học từ chat: ghi candidate
+
 from data_processing.rule_learning_from_chat import upsert_candidate
 from data_processing.rule_memory import get_fingerprint
 
 router = APIRouter()
 store = SessionStore()
 
-# ====== Helpers đọc dữ liệu & áp dụng thay đổi ======
+
 
 def _read_df(file_path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
     ext = (file_path or "").lower().split(".")[-1]
@@ -110,8 +110,6 @@ def _set_group_by(sections: List[Section], sid: str, col: str) -> List[Section]:
             sections[idx].group_by = col
     return sections
 
-# ====== API models ======
-
 class ChatRequest(BaseModel):
     session_id: str
     message: str
@@ -123,7 +121,7 @@ class ChatResponse(BaseModel):
     arguments: Dict[str, Any]
     preview: Dict[str, Any]
 
-# Endpoint chính: dùng LLM NLU + ghi candidate
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
@@ -132,10 +130,10 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=404, detail="Session không tồn tại")
     user_id = getattr(data, "user_id", None) or "anonymous"
 
-    # lưu hội thoại người dùng
+    
     memory.add_record(user_id, {"role": "user", "session_id": req.session_id, "content": req.message})
 
-    # 1) Dùng LLM để trích intent + arguments
+   
     parsed = parse_intent_llm(req.message)  
     intent: str = parsed.get("intent", "unknown")
     args: Dict[str, Any] = parsed.get("arguments", {}) or {}
@@ -144,7 +142,7 @@ async def chat(req: ChatRequest):
     sections: List[Section] = getattr(data, "auto_sections", []) or []
     reply = ""
 
-    # 2) Áp dụng intent (vừa chỉnh preview, vừa gom 'operations' để học)
+    
     operations: List[Dict[str, Any]] = []
 
     if intent == "set_header_row":
@@ -218,11 +216,11 @@ async def chat(req: ChatRequest):
     else:
         reply = "Mình chưa hiểu yêu cầu này. Bạn thử nói ngắn gọn, ví dụ: 'gộp 1 và 2', 'S1 từ 10 đến 32', 'đặt header 7'."
 
-    # 3) Lưu lại thay đổi vào session (preview sống)
+    
     data.auto_sections = sections
     store.upsert(data)
 
-    # 4)  Ghi CANDIDATE để “học dần” (không chặn luồng nếu lỗi)
+    
     try:
         df = _read_df(data.file_path, sheet_name=req.sheet_name)
         fp = get_fingerprint(df)
@@ -235,14 +233,14 @@ async def chat(req: ChatRequest):
     except Exception:
         pass
 
-    # 5) Trả preview sau chỉnh
+    
     preview = {
         "used_rule": getattr(data, "used_rule", False),
-        "index_base": "zero",  # thêm dòng này
+        "index_base": "zero", 
         "auto_sections": [s.model_dump() for s in sections]
     }
 
-    # lưu phản hồi assistant
+    
     memory.add_record(user_id, {
         "role": "assistant",
         "session_id": req.session_id,

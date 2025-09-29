@@ -1,4 +1,3 @@
-# streamlit_app/src/state.py
 import streamlit as st
 
 DEFAULT_USER = "dung123"

@@ -1,32 +1,20 @@
 {
-  "version": 1756509465,
-  "updated_at": 1756509465,
-  "overrides": {
-    "sections": [
-      {
-        "selector": {
-          "by": "index",
-          "value": "S1"
-        },
-        "fields": {
-          "start_row": 6,
-          "end_row": 31,
-          "header_row": 5,
-          "label": "Bang chinh"
-        }
-      },
-      {
-        "selector": {
-          "by": "index",
-          "value": "S2"
-        },
-        "fields": {
-          "start_row": 35,
-          "end_row": 49,
-          "header_row": 34,
-          "label": "Du an thang 2"
-        }
-      }
-    ]
-  }
+  "version": "1.2",
+  "type": "structured",
+  "index_base": "zero",
+  "header_row": 5,
+  "sections": [
+    {
+      "start_row": 6,
+      "end_row": 31,
+      "header_row": 5,
+      "label": "Nhat ky cong viec"
+    },
+    {
+      "start_row": 35,
+      "end_row": 49,
+      "header_row": 34,
+      "label": "Du an thang 2"
+    }
+  ]
 }

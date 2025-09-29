@@ -1,4 +1,3 @@
-# services/preview_ops.py
 from typing import Dict, Any, List
 
 def set_header_row(preview: Dict[str, Any], header_row: int):

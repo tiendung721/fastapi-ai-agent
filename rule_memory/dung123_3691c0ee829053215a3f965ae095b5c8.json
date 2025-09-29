@@ -1,0 +1,26 @@
+{
+  "version": "1.2",
+  "type": "structured",
+  "index_base": "zero",
+  "header_row": 5,
+  "sections": [
+    {
+      "start_row": 6,
+      "end_row": 259,
+      "header_row": 5,
+      "label": "Nhật ký công việc"
+    },
+    {
+      "start_row": 264,
+      "end_row": 278,
+      "header_row": 263,
+      "label": "Dự án tháng 2"
+    },
+    {
+      "start_row": 283,
+      "end_row": 293,
+      "header_row": 282,
+      "label": "Kế hoạch tháng 3"
+    }
+  ]
+}

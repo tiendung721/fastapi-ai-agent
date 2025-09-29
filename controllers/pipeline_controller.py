@@ -14,14 +14,18 @@ from data_processing.exporter import save_report_excel
 from data_processing.chat_memory import memory
 from data_processing.rule_learning_from_chat import promote_best_candidates
 
+
 router = APIRouter()
 store = SessionStore()
 
 def _load_df(file_path: str, sheet_name: Optional[str] = None):
     ext = (file_path or "").lower().split(".")[-1]
     if ext == "csv":
-        return pd.read_csv(file_path)
-    return pd.read_excel(file_path, sheet_name=sheet_name)
+        return pd.read_csv(file_path, header=None) 
+    try:
+        return pd.read_excel(file_path, sheet_name=sheet_name, header=None)  
+    except TypeError:
+        return pd.read_excel(file_path, header=None)  
 
 def _pick_sections(data) -> tuple[list[dict], bool]:
     if data.confirmed_sections and len(data.confirmed_sections) > 0:
@@ -52,10 +56,13 @@ def run_final(payload: FinalIn) -> Dict[str, Any]:
             "error": "Không có sections (auto hoặc confirmed). Hãy /preview và/hoặc /chat trước.",
         }
 
-    # 0‑based an toàn: chỉ convert khi thực sự 1‑based (theo validators.to_zero_based mới)
+    
     try:
-        sections = to_zero_based(sections, nrows=df.shape[0])
-        sections = validate_sections_zero_based(sections, nrows=df.shape[0])
+        if is_confirmed:
+            sections = validate_sections_zero_based(sections, nrows=df.shape[0])
+        else:
+            sections = to_zero_based(sections, nrows=df.shape[0])
+            sections = validate_sections_zero_based(sections, nrows=df.shape[0])
     except Exception as e:
         return {"ok": False, "code": "INVALID_SECTIONS", "error": f"Sections không hợp lệ: {e}"}
 
@@ -71,8 +78,12 @@ def run_final(payload: FinalIn) -> Dict[str, Any]:
 
     export_path = None
     try:
-        export_path = save_report_excel(payload.user_id, report, folder="output")
-    except Exception:
+        export_path = save_report_excel(
+            report=report,
+            session_id=payload.session_id,
+            filename_prefix=payload.user_id  
+        )
+    except Exception as e:
         export_path = None
 
     # Lưu RULE
@@ -103,7 +114,7 @@ def run_final(payload: FinalIn) -> Dict[str, Any]:
                 sections=sections,
                 sheet_name=payload.sheet_name,
             )
-            # đảm bảo 0-based nếu model trả về 1-based
+            
             if isinstance(learned_rule, dict):
                 if isinstance(learned_rule.get("sections"), list):
                     learned_rule["sections"] = validate_sections_zero_based(

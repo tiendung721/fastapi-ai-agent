@@ -1,14 +1,16 @@
-# streamlit_app/app.py
 import streamlit as st
 from src.state import init_state
 from src import api
-from src.ui import sections_to_df_1based, render_sections_editor
+from src.ui import sections_to_df_1based, render_sections_editor, sections_editor_with_add_delete
+from urllib.parse import quote
+
+
 
 st.set_page_config(page_title="AI Agent UI", layout="wide")
 init_state()
 
 
-st.title("AI Agent – One Window")
+st.title("AI Agent – Excel analysis with LLM")
 st.caption("Upload → Preview & Adjust & Chat → Run Final → History")
 
 
@@ -172,6 +174,62 @@ with right:
 st.markdown("---")
 
 
+st.subheader("Chỉnh sửa sections (áp dụng cho session)")
+
+from src import api as _api
+sid = st.session_state.get("session_id", "")
+
+# Lấy danh sách working sections từ BE (ưu tiên confirmed)
+if sid:
+    try:
+        resp = _api.sections_get(sid)
+        if resp.get("ok"):
+            st.session_state["sections"] = resp["data"]["sections"]
+    except Exception as e:
+        st.warning(f"Không tải được sections: {e}")
+
+df1 = sections_to_df_1based(st.session_state.get("sections", []))
+edited_zero_df, del_rows, create_payload = sections_editor_with_add_delete(df1, key_prefix="secx")
+
+colA, colB, colC = st.columns([1, 1, 2])
+
+with colA:
+    if st.button("Áp dụng thay đổi "):
+        try:
+            payload = edited_zero_df.to_dict(orient="records")
+            res = _api.sections_replace(sid, payload)
+            if res.get("ok"):
+                st.success("Đã cập nhật sections lên BE.")
+                st.session_state["sections"] = res["data"]["sections"]
+            else:
+                st.error(res)
+        except Exception as e:
+            st.error(f"Lỗi: {e}")
+
+with colB:
+    if st.button("Xoá các section đã chọn"):
+        try:
+            cur = edited_zero_df.to_dict(orient="records")
+            keep = [v for i, v in enumerate(cur) if i not in del_rows]
+            res = _api.sections_replace(sid, keep)
+            if res.get("ok"):
+                st.success("Đã xoá.")
+                st.session_state["sections"] = res["data"]["sections"]
+        except Exception as e:
+            st.error(f"Lỗi: {e}")
+
+with colC:
+    if st.button("Thêm section mới"):
+        try:
+            res = _api.sections_add(sid, create_payload)
+            if res.get("ok"):
+                st.success("Đã thêm.")
+                st.session_state["sections"] = res["data"]["sections"]
+        except Exception as e:
+            st.error(f"Lỗi: {e}")
+
+
+
 st.subheader(" Run Final")
 rf1, rf2 = st.columns([1,1])
 with rf1:
@@ -187,41 +245,28 @@ if isinstance(res, dict) and res:
     with st.expander("Payload /final"):
         st.json(res)
 
-    # gom các file URL ở nhiều key
-    def _collect_files(res_dict):
-        cands = []
-        data = res_dict.get("data") if isinstance(res_dict.get("data"), dict) else None
-        for obj in [res_dict, data, (data or {}).get("result") if isinstance(data, dict) else None]:
-            if not isinstance(obj, dict):
-                continue
-            for k in ("files", "file_urls", "outputs", "artifacts"):
-                v = obj.get(k)
-                if isinstance(v, list) and v:
-                    cands = v
-                    break
-        out = []
-        for f in cands:
-            if isinstance(f, dict):
-                name = f.get("name") or f.get("filename") or f.get("file") or f.get("title") or "file"
-                url  = f.get("url") or f.get("href") or f.get("path")
-            elif isinstance(f, str):
-                name = f.rsplit("/", 1)[-1] or "file"
-                url  = f
-            else:
-                continue
-            if url:
-                if url.startswith("/"):
-                    url = api.BASE + url
-                out.append({"name": name, "url": url})
-        return out
+    
+# --- FILE LINKS (only 1 clickable link) ---
+data = res.get("data", {}) if isinstance(res.get("data"), dict) else {}
+st.markdown("**Files:**")
 
-    files = _collect_files(res)
-    st.markdown("**Files:**")
-    if files:
-        for f in files:
-            st.markdown(f"- [{f['name']}]({f['url']})")
-    else:
-        st.info("Không tìm thấy danh sách file trong payload.")
+name = data.get("file_name")
+if not name:
+    export = data.get("export", {})
+    if isinstance(export, dict):
+        excel = export.get("excel_path")
+        if isinstance(excel, dict):
+            name = excel.get("filename")
+        elif isinstance(excel, str):
+            name = excel.rsplit("/", 1)[-1]
+
+if name:
+    url = f"{api.BASE.rstrip('/')}/static/{quote(name)}"
+    # Cho phép Markdown link click được
+    st.markdown(f"- [{name}]({url})", unsafe_allow_html=True)
+else:
+    st.info("Không tìm thấy danh sách file trong payload.")
+
 
 st.markdown("---")
 

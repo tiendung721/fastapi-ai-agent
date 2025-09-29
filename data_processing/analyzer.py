@@ -4,9 +4,7 @@ import pandas as pd
 
 from .auto_group_by import choose_group_by
 
-# -----------------------------
-# Utilities
-# -----------------------------
+
 
 def _normalize_region(df: pd.DataFrame, header_row: int, end_row: int) -> pd.DataFrame:
     """
@@ -21,16 +19,15 @@ def _normalize_region(df: pd.DataFrame, header_row: int, end_row: int) -> pd.Dat
     if n == 0:
         return pd.DataFrame()
 
-    # clamp to 0-based valid bounds
     header_row = max(0, min(header_row, n - 1))
     end_row = max(header_row, min(end_row, n - 1))
 
-    # set columns from header row (0-based)
+   
     header_values = df.iloc[header_row].astype(str).tolist()
-    # slice inclusive of end_row → iloc uses [start:end), so +1
+    
     region = df.iloc[header_row : end_row + 1].copy()
 
-    # Disambiguate duplicated/empty column names
+    
     cols: List[str] = []
     seen: Dict[str, int] = {}
     for c in header_values:
@@ -45,11 +42,11 @@ def _normalize_region(df: pd.DataFrame, header_row: int, end_row: int) -> pd.Dat
             cols.append(k)
     region.columns = cols
 
-    # drop the header row from data
+   
     if region.shape[0] > 0:
         region = region.iloc[1:].reset_index(drop=True)
 
-    # Trim empty columns (all-nan)
+   
     if region.shape[0] > 0:
         region = region.dropna(axis=1, how="all")
 
@@ -94,7 +91,7 @@ def _top_categories(df: pd.DataFrame, col: str, k: int = 10) -> Dict[str, int]:
 def _numeric_summary(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
     """Summary for numeric columns."""
     out: Dict[str, Dict[str, float]] = {}
-    num_df = df.select_dtypes(include=["number"])  # integers & floats
+    num_df = df.select_dtypes(include=["number"])  
     for c in num_df.columns:
         s = num_df[c].dropna()
         if s.empty:
@@ -128,12 +125,12 @@ def _analyze_single_region(
 
     region = _normalize_region(sheet_df, header_row=hr, end_row=er)
 
-    # choose group_by
+    
     group_by = params.get("group_by")
     if not group_by or (region.shape[1] > 0 and group_by not in region.columns):
         group_by = choose_group_by(region)
 
-    # aggregation: if group_by exists
+    
     group_summary: Dict[str, int] = {}
     if group_by and group_by in region.columns:
         try:
@@ -147,7 +144,7 @@ def _analyze_single_region(
         except Exception:
             group_summary = {}
 
-    # quality + numeric summary
+    
     quality = _column_quality(region)
     numeric = _numeric_summary(region)
 
@@ -177,9 +174,6 @@ def _analyze_single_region(
     }
 
 
-# -----------------------------
-# Public entry
-# -----------------------------
 
 def run_analysis(
     sheet_df: pd.DataFrame,
@@ -197,7 +191,7 @@ def run_analysis(
         try:
             res = _analyze_single_region(sheet_df, s, params=params)
         except Exception as e:
-            # Fail-safe per region to avoid whole pipeline break
+            
             res = {
                 "label": s.get("label"),
                 "error": str(e),
