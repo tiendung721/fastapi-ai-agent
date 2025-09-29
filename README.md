@@ -1,183 +1,194 @@
-# Agent_FastAPI — Streamlit
+# Agent_FastAPI
+
+> **AI Excel Agent + FastAPI/Streamlit** — Tự động phát hiện & chia *section* trong Excel/CSV, có cổng API và UI để xem trước, chỉnh sửa và xác nhận.  
+
+---
+
+## 1) Tổng quan
+
+Dự án này hiện thực một **Excel Agent** có khả năng:
+- Phát hiện các **khối/section** trong file Excel/CSV bằng heuristic Python.
+- **Gate anomaly** để tự động gọi LLM trong các ca khó (tùy chọn).
+- Cung cấp **API FastAPI** cho BE (upload, preview, confirm, history…).
+- Cung cấp **UI Streamlit** cho FE (upload → preview/chỉnh sửa → run final → history).
 
 
-## Cấu trúc thư mục (rút gọn)
+
+---
+
+## 2) Cấu trúc thư mục (rút gọn)
+
 ```
-agent_proj/
-└── Agent_FastAPI
-    ├── common
-    │   ├── models.py
-    │   ├── retry.py
-    │   └── session_store.py
-    ├── controllers
-    │   ├── chat_controller.py
-    │   ├── extractor_controller.py
-    │   ├── history_controller.py
-    │   ├── pipeline_controller.py
-    │   ├── rules_controller.py
-    │   └── section_confirm_controller.py
-    ├── data
-    │   ├── 2025_Báo_cáo_công việc.xlsx
-    │   └── data_test.xlsx
-    ├── data_processing
-    │   ├── analyzer.py
-    │   ├── auto_group_by.py
-    │   ├── chat_memory.py
-    │   ├── exporter.py
-    │   ├── planner.py
-    │   ├── rule_based_extractor.py
-    │   ├── rule_learning_from_chat.py
-    │   ├── rule_learning_gpt.py
-    │   ├── rule_memory.py
-    │   ├── rule_schema.py
-    │   ├── section_detector.py
-    │   └── validators.py
-    ├── output
-    ├── rule_candidates
-    ├── rule_memory
-    ├── services
-    │   ├── intent_llm.py
-    │   ├── llm_client.py
-    │   ├── memory_store.py
-    │   ├── preview_ops.py
-    │   └── rule_synthesizer.py
-    ├── streamlit_app
-    │   ├── src
-    │   │   ├── api.py
-    │   │   ├── state.py
-    │   │   ├── ui.py
-    │   │   └── utils.py
-    │   ├── .env
-    │   ├── app.py
-    │   └── requirements.txt
-    ├── uploaded_files
-    ├── .env
-    ├── .gitignore
-    ├── main.py
-    ├── session_store.sqlite3
-    └── user_history.json
+Agent_FastAPI/
+├── .env
+├── .gitignore
+├── common/
+│   ├── models.py
+│   ├── retry.py
+│   └── session_store.py
+├── controllers/
+│   ├── chat_controller.py
+│   ├── extractor_controller.py
+│   ├── history_controller.py
+│   ├── pipeline_controller.py
+│   ├── rules_controller.py
+│   ├── section_confirm_controller.py
+│   └── sections_controller.py
+├── data/
+│   ├── 2025_Báo_cáo_công việc.xlsx
+│   ├── dat_hang.xlsx
+│   ├── data_test.xlsx
+│   └── san_luong.xlsx
+├── data_processing/
+│   ├── analyzer.py
+│   ├── auto_group_by.py
+│   ├── chat_memory.py
+│   ├── exporter.py
+│   ├── planner.py
+│   ├── rule_based_extractor.py
+│   ├── rule_learning_from_chat.py
+│   ├── rule_learning_gpt.py
+│   ├── rule_memory.py
+│   ├── rule_schema.py
+│   ├── section_detector.py
+│   └── validators.py
+├── main.py
+├── output/
+├── rule_candidates/
+├── rule_memory/
+├── services/
+│   ├── intent_llm.py
+│   ├── llm_client.py
+│   ├── memory_store.py
+│   ├── preview_ops.py
+│   └── rule_synthesizer.py
+├── session_store.sqlite3
+├── streamlit_app/
+│   ├── .env
+│   ├── app.py
+│   ├── requirements.txt
+│   └── src/
+│       ├── api.py
+│       ├── state.py
+│       ├── ui.py
+│       └── utils.py
+├── uploaded_files/
+└── user_history.json
+```
+---
+
+## 3) Các thành phần chính
+
+- **FastAPI backend**: các module có import `fastapi` và định nghĩa `app = FastAPI(...)`.
+- **Streamlit UI**: file có `import streamlit as st` như:
+  - streamlit_app/app.py
+  - streamlit_app/src/state.py
+  - streamlit_app/src/ui.py
+
+
+---
+
+## 4) API (FastAPI) — Route đã phát hiện
+
+| Method | Path | File | Handler |
+|---|---|---|---|
+| DELETE | `/history/{user_id}` | `controllers/history_controller.py` | `clear_history` |
+| DELETE | `/sessions/{session_id}/sections/{index}` | `controllers/sections_controller.py` | `delete_section` |
+| GET | `/` | `main.py` | `index` |
+| GET | `/health` | `main.py` | `health` |
+| GET | `/history/{user_id}` | `controllers/history_controller.py` | `get_history` |
+| GET | `/rules/get` | `controllers/rules_controller.py` | `rules_get` |
+| GET | `/sessions/{session_id}/sections` | `controllers/sections_controller.py` | `get_sections` |
+| POST | `/chat` | `controllers/chat_controller.py` | `chat` |
+| POST | `/confirm_sections` | `controllers/section_confirm_controller.py` | `confirm_sections` |
+| POST | `/final` | `controllers/pipeline_controller.py` | `run_final` |
+| POST | `/preview` | `controllers/extractor_controller.py` | `preview` |
+| POST | `/rules/save` | `controllers/rules_controller.py` | `rules_save` |
+| POST | `/sessions/{session_id}/sections` | `controllers/sections_controller.py` | `add_section` |
+| POST | `/upload` | `controllers/extractor_controller.py` | `upload_file` |
+| PUT | `/sessions/{session_id}/sections` | `controllers/sections_controller.py` | `replace_sections` |
+
+> ⚠️ Trình quét regex có thể bỏ sót các route gắn vào `APIRouter()` hoặc các file import động. Vui lòng bổ sung bằng tay nếu thiếu.
+
+---
+
+
+Gợi ý file `.env.example`:
+```
+# Backend
+OPENAI_API_KEY=
+BF_TOKEN=
+LOG_LEVEL=INFO
+# ... thêm các biến bạn dùng
 ```
 
-## Thành phần chính
+---
 
-- **Frontend**: Ứng dụng Streamlit.  
-- **Backend**: Ứng dụng FastAPI với các controller.  
-- **Logic cốt lõi**: thư mục `data_processing/`, `services/`, `common/`.  
+## 5) Cài đặt
 
+### 5.1 Yêu cầu
+- Python 3.10+ (khuyến nghị 3.10/3.11)
+- pip / venv
+- (Tùy chọn) Visual Studio Build Tools trên Windows nếu build native packages
+- (Tùy chọn) CUDA/cuDNN nếu dùng tăng tốc GPU
 
-## Các Endpoint FastAPI (quét được)
+### 5.2 Tạo môi trường & cài dependency
 
-- **POST** `/chat`  —  trong `controllers/chat_controller.py`
-- **POST** `/upload`  —  trong `controllers/extractor_controller.py`
-- **POST** `/preview`  —  trong `controllers/extractor_controller.py`
-- **GET** `/history/{user_id}`  —  trong `controllers/history_controller.py`
-- **DELETE** `/history/{user_id}`  —  trong `controllers/history_controller.py`
-- **POST** `/final`  —  trong `controllers/pipeline_controller.py`
-- **POST** `/rules/save`  —  trong `controllers/rules_controller.py`
-- **GET** `/rules/get`  —  trong `controllers/rules_controller.py`
-- **POST** `/confirm_sections`  —  trong `controllers/section_confirm_controller.py`
-- **GET** `/health`  —  trong `main.py`
-- **GET** `/`  —  trong `main.py`
-
-## Sơ đồ Pipeline
-```
-Người dùng (Streamlit UI)
-    │
-    │ 1) Upload file / cấu hình
-    ▼
-Frontend (Streamlit) → gọi FastAPI endpoints:
-    - /upload → trả về session_id
-    - /preview → phân loại section (rule/GPT)
-    - /confirm → người dùng xác nhận/chỉnh sửa section → học rule
-    - /final → chạy analyzer → planner → trả về file/tóm tắt
-    │
-    ▼
-Backend (FastAPI, controllers/*):
-    - SessionStore quản lý trạng thái từng session
-    - data_processing/* modules:
-        * extractor (theo rule + GPT hỗ trợ)
-        * analyzer (tính toán thống kê, group_by)
-        * planner (tạo file Excel/tóm tắt)
-        * rule_memory (lưu fingerprint & rule theo user_id)
-        * chat_memory & intent_llm (học từ hội thoại)
-    │
-    ▼
-Kết quả:
-    - /outputs/<session_id>/... (xlsx, json, logs)
-```
-
-### Luồng xử lý chi tiết
-1. **Upload** (Streamlit → FastAPI `/upload`): lưu file, tạo `session_id`, ghi nhận `user_id`.
-2. **Preview** (Streamlit → `/preview`): đọc Excel/CSV; chạy **bộ phân loại section** (ưu tiên rule-based, fallback GPT); trả về danh sách section (0-based) gồm `header_row`, `start_row`, `end_row`, `label`.
-3. **Confirm** (Streamlit → `/confirm`): người dùng chỉnh sửa section; hệ thống xác thực (`validators.py`), lưu vào `SessionStore`, **học rule** từ section (`rule_learning_gpt.py`), và **lưu rule theo fingerprint** (`rule_memory.py`).
-4. **Final** (Streamlit → `/final`): chạy **extractor** với rule đã học → sinh JSON chuẩn; chạy **analyzer** để tính toán; sau đó **planner** tạo báo cáo Excel/tóm tắt; trả về file và summary.
-5. **Chat Learning (tùy chọn)**: `/chat` phân tích intent (`services/intent_llm.py`), ghi nhận candidate (`rule_learning_from_chat.py`), và có thể **thăng hạng rule**.
-
-## Frontend — Streamlit
-- Ứng dụng tại thư mục `streamlit_app/`.
-- Thành phần giao diện:
-  - Upload file (Excel/CSV).
-  - Nút: **Preview**, **Confirm**, **Run Final**.
-  - Lưu `session_id`, `user_id`, danh sách section vào session state.
-- Gọi FastAPI bằng `httpx` với API_BASE từ file `.env`.
-- Hiển thị bảng, JSON section, link tải file kết quả.
-
-### Cách chạy Streamlit
 ```bash
-cd streamlit_app
-python -m venv .venv && . .venv/bin/activate  # Windows: .venv\Scripts\activate
+# Tạo venv
+python -m venv .venv
+# Kích hoạt
+# Windows:
+.venv\Scripts\activate
+# Linux/macOS:
+# source .venv/bin/activate
+
+# Cài đặt các gói
+pip install --upgrade pip wheel setuptools
 pip install -r requirements.txt
-# Đảm bảo file .env có API_BASE=http://localhost:8000 và USER_ID=ten_cua_ban
-streamlit run app.py
 ```
 
-## Backend — FastAPI
-- Điểm vào: `main.py` (mount các router từ `controllers/`).
-- Module chính:
-  - `common/session_store.py` — lưu session (RAM/SQLite).
-  - `common/models.py` — định nghĩa schema (Section, ...).
-  - `data_processing/validators.py` — xác thực chỉ số 0-based.
-  - `data_processing/rule_based_extractor.py` — trích xuất theo rule.
-  - `data_processing/rule_learning_gpt.py` — sinh rule từ section confirm.
-  - `data_processing/rule_memory.py` — fingerprint & lưu rule theo user.
-  - `data_processing/chat_memory.py` — lưu hội thoại.
-  - `services/intent_llm.py` — phân tích intent chat.
-- Controllers tiêu biểu:
-  - `/upload` — upload file, trả session_id.
-  - `/preview` — sinh section gợi ý.
-  - `/confirm` — xác nhận & học rule.
-  - `/final` — chạy extractor → analyzer → planner → trả file & summary.
-  - `/chat` — học từ hội thoại.
+---
 
-### Cách chạy FastAPI
+## 6) Chạy nhanh (Quickstart)
+
+### 6.1 Chạy Backend (FastAPI)
 ```bash
-python -m venv .venv && . .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+# Ví dụ uvicorn – cập nhật đường dẫn module:app tương ứng trong repo của bạn
+uvicorn app.serve:app --host 0.0.0.0 --port 8000 --reload
 ```
-> Điều chỉnh module path (vd: `src.main:app`) nếu khác.
+- Mặc định API docs tại: `http://localhost:8000/docs` (Swagger).
 
-## Yêu cầu & Cấu hình
-Các file cấu hình phát hiện:
-- Agent_FastAPI/.env
-- Agent_FastAPI/streamlit_app/.env
-- Agent_FastAPI/streamlit_app/requirements.txt
+### 6.2 Chạy UI (Streamlit)
+```bash
+# Cập nhật đường dẫn file UI nếu khác
+streamlit run streamlit_app/app.py
+```
 
-Biến môi trường thường dùng:
-- `API_BASE` — URL FastAPI để Streamlit gọi
-- `OUTPUT_DIR` — thư mục xuất kết quả
-- `OPENAI_API_KEY` — dùng nếu bật học rule qua GPT
+### 6.3 Quy trình sử dụng
+1. **Upload** file `.xlsx/.xls/.csv` ở UI.
+2. **Preview & Adjust**: xem/điều chỉnh các section đã phát hiện.
+3. **Chat/LLM Assist**: LLM có thể được gọi khi điểm anomaly vượt ngưỡng.
+4. **Run Final**: xác nhận và gửi về BE.
+5. **History**: xem lại các phiên làm việc.
 
-## Ghi chú triển khai
-Một số file chứa logic chính:
-- common/session_store.py — quản lý session
-- data_processing/analyzer.py — phân tích dữ liệu
-- data_processing/planner.py — lập báo cáo
-- data_processing/rule_based_extractor.py — extractor
-- data_processing/rule_learning_gpt.py — học rule
-- data_processing/rule_memory.py — lưu rule
-- controllers/* — định nghĩa API endpoint
-- streamlit_app/app.py — giao diện người dùng
+---
+
+## 7) Hướng dẫn tích hợp LLM (tùy chọn)
+
+- Đặt `OPENAI_API_KEY` trong `.env` để bật gọi LLM khi `anomaly_score` vượt ngưỡng.
+- Có thể cấu hình ngưỡng `--anomaly` trong CLI (nếu script hỗ trợ) hoặc trong config BE.
+
+---
+
+
+## 8) Roadmap gợi ý
+
+- [ ] Trích xuất schema section ổn định hơn (xử lý header hợp nhất, merged cells).
+- [ ] Bộ test unit cho các case Excel khó.
+- [ ] Endpoint xác nhận section trả về JSON chuẩn + lưu lịch sử.
+- [ ] Xử lý dữ liệu group_by đa dạng hơn.
+- [ ] Cải thiện chất lượng kết quả dữ liệu output.
 
 ---
 
